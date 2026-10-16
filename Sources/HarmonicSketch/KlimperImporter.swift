@@ -51,7 +51,8 @@ enum KlimperImporter {
             if let mode, steps != mode.intervals { warnings.append("Scale steps differ from the named built-in mode; the app keeps the name's mode only.") }
         }
 
-        _ = try object(root["chord_track"], at: "chord_track")
+        let chordTrack = try object(root["chord_track"], at: "chord_track")
+        let chordSettings = try channelSettings(chordTrack, at: "chord_track", warnings: &warnings)
         let trackObjects = try array(root["tracks"], at: "tracks")
         guard trackObjects.count <= 256 else { throw ImportError.invalid("tracks exceeds the supported count of 256") }
         var tracks: [Track] = []
@@ -64,18 +65,16 @@ enum KlimperImporter {
             let name = try string(value["name"], at: "\(path).name")
             let volume = try number(value["volume"], at: "\(path).volume")
             guard (0...1).contains(volume) else { throw ImportError.invalid("\(path).volume must be between 0 and 1") }
+            let pan = try number(value["pan"], at: "\(path).pan")
+            guard (-1...1).contains(pan) else { throw ImportError.invalid("\(path).pan must be between -1 and 1") }
             let mute = try bool(value["mute"], at: "\(path).mute")
             let solo = try bool(value["solo"], at: "\(path).solo")
             guard let instrument = value["instrument"] as? String else {
                 throw ImportError.invalid("\(path).instrument must be a string descriptor")
             }
-            tracks.append(Track(name: name, volume: volume, mute: mute, solo: solo, instrument: 0))
+            tracks.append(Track(name: name, volume: volume, mute: mute, solo: solo, instrument: 0, pan: pan))
             if !instrument.isEmpty { warnings.append("Track `\(name)` instrument descriptor `\(instrument)` is not represented and was reset to the default sound.") }
             trackIndices[id] = tracks.count - 1
-            if let panValue = value["pan"] {
-                let pan = try number(panValue, at: "\(path).pan")
-                if pan != 0 { warnings.append("Track `\(name)` pan (\(pan)) is not represented and was reset to center.") }
-            }
         }
 
         let sectionsJSON = try array(root["sections"], at: "sections")
@@ -94,10 +93,12 @@ enum KlimperImporter {
         let end = try number(root["_end"], at: "_end")
         guard start >= 0, end > start else { throw ImportError.invalid("loop bounds must be nonnegative beats with end after start") }
         _ = try bool(root["looping"], at: "looping") // Saved playback toggle has no persistent Song field.
-        warnings.append("Klimper track pan, project chord-track routing, section colors, and saved UI state are not represented.")
+        warnings.append("The saved playback looping toggle is not represented by Song.")
+        warnings.append("Section colors and saved UI state are not represented.")
         warnings.append("Nested sections are flattened into timeline sections; parent/child grouping is not retained.")
         let song = Song(title: title, tempo: bpm, key: key, mode: mode ?? .major,
-                        tracks: tracks, chords: chords, sections: sections, loopStart: start, loopEnd: end)
+                        tracks: tracks, chords: chords, sections: sections,
+                        chordSettings: chordSettings, loopStart: start, loopEnd: end)
         try ProjectPersistence.validate(song)
         return KlimperImportResult(song: song, warnings: Array(Set(warnings)).sorted())
     }
@@ -198,6 +199,24 @@ enum KlimperImporter {
         case "harmonicminor": return .harmonicMinor
         default: return nil
         }
+    }
+
+    private static func channelSettings(_ value: [String: Any], at path: String,
+                                        warnings: inout [String]) throws -> ChannelSettings {
+        let volume = try number(value["volume"], at: "\(path).volume")
+        let pan = try number(value["pan"], at: "\(path).pan")
+        guard (0...1).contains(volume), (-1...1).contains(pan) else {
+            throw ImportError.invalid("\(path) volume or pan is outside the supported range")
+        }
+        let mute = try bool(value["mute"], at: "\(path).mute")
+        let solo = try bool(value["solo"], at: "\(path).solo")
+        guard let instrument = value["instrument"] as? String else {
+            throw ImportError.invalid("\(path).instrument must be a string descriptor")
+        }
+        if !instrument.isEmpty {
+            warnings.append("Chord-track instrument descriptor `\(instrument)` is not represented and uses the default sound.")
+        }
+        return ChannelSettings(volume: volume, mute: mute, solo: solo, instrument: 0, pan: pan)
     }
 
     private static func object(_ value: Any?, at path: String) throws -> [String: Any] {

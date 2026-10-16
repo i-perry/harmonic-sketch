@@ -80,6 +80,7 @@ struct Track: Identifiable, Codable, Equatable {
     var mute = false
     var solo = false
     var instrument = 0
+    var pan: Double? = nil
 }
 struct ChordClip: Identifiable, Codable, Equatable {
     var id = UUID()
@@ -104,8 +105,17 @@ struct Song: Codable, Equatable {
     var tracks: [Track] = [Track(name: "Melody"), Track(name: "Bass", instrument: 32)]
     var chords: [ChordClip] = []
     var sections: [SongSection] = []
+    var chordSettings: ChannelSettings? = nil
     var loopStart: Double = 0
     var loopEnd: Double = 16
+    var chordChannel: ChannelSettings { chordSettings ?? ChannelSettings() }
+}
+struct ChannelSettings: Codable, Equatable {
+    var volume: Double = 0.8
+    var mute = false
+    var solo = false
+    var instrument = 0
+    var pan: Double = 0
 }
 struct SongSection: Identifiable, Codable, Equatable {
     var id = UUID()

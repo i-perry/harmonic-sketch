@@ -54,6 +54,12 @@ enum ProjectPersistence {
         guard (0...11).contains(song.key) else {
             throw PersistenceError.invalidSong("Key must be a pitch class from 0 through 11.")
         }
+        let chordChannel = song.chordChannel
+        guard chordChannel.volume.isFinite, (0...1).contains(chordChannel.volume),
+              (0...127).contains(chordChannel.instrument), chordChannel.pan.isFinite,
+              (-1...1).contains(chordChannel.pan) else {
+            throw PersistenceError.invalidSong("Chord channel volume, instrument, or pan is outside its valid range.")
+        }
         guard song.loopStart.isFinite, song.loopEnd.isFinite, song.loopStart >= 0,
               song.loopEnd > song.loopStart, song.loopEnd <= maximumBeat else {
             throw PersistenceError.invalidSong("Loop bounds must be finite, nonnegative beats with end after start.")
@@ -65,8 +71,10 @@ enum ProjectPersistence {
         }
         var noteCount = 0
         for track in song.tracks {
-            guard track.volume.isFinite, (0...1).contains(track.volume), (0...127).contains(track.instrument) else {
-                throw PersistenceError.invalidSong("Track volume or instrument is outside its valid range.")
+            let pan = track.pan ?? 0
+            guard track.volume.isFinite, (0...1).contains(track.volume), (0...127).contains(track.instrument),
+                  pan.isFinite, (-1...1).contains(pan) else {
+                throw PersistenceError.invalidSong("Track volume, instrument, or pan is outside its valid range.")
             }
             guard Set(track.notes.map(\.id)).count == track.notes.count else {
                 throw PersistenceError.invalidSong("Note identifiers must be unique within each track.")

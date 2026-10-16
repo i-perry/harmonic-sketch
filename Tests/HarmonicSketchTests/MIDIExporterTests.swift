@@ -45,6 +45,41 @@ final class MIDIExporterTests: XCTestCase {
         XCTAssertEqual(file.tracks.count, 2)
     }
 
+    func testExportsChordAndTrackPanWithCenterAndEdgeControllers() throws {
+        var left = Track(name: "Left", notes: [Note(pitch: 60, start: 0, duration: 1)])
+        left.pan = -1
+        var center = Track(name: "Center", notes: [Note(pitch: 62, start: 0, duration: 1)])
+        center.pan = 0
+        var right = Track(name: "Right", notes: [Note(pitch: 64, start: 0, duration: 1)])
+        right.pan = 1
+        let song = Song(tracks: [left, center, right], chords: [ChordClip(root: 0, quality: .major, start: 0)],
+                        chordSettings: ChannelSettings(volume: 0.5, instrument: 12, pan: 0))
+        let file = try parseMIDI(MIDIExporter.data(for: song))
+
+        XCTAssertTrue(try XCTUnwrap(namedTrack("Left", in: file)).contains { $0.status == 0xB1 && $0.data == [10, 0] })
+        XCTAssertTrue(try XCTUnwrap(namedTrack("Center", in: file)).contains { $0.status == 0xB2 && $0.data == [10, 64] })
+        XCTAssertTrue(try XCTUnwrap(namedTrack("Right", in: file)).contains { $0.status == 0xB3 && $0.data == [10, 127] })
+        let chordTrack = try XCTUnwrap(namedTrack("Chords", in: file))
+        XCTAssertTrue(chordTrack.contains { $0.status == 0xB0 && $0.data == [10, 64] })
+        XCTAssertTrue(chordTrack.contains { $0.status == 0xC0 && $0.data == [12] })
+        XCTAssertTrue(chordTrack.contains { $0.status == 0xB0 && $0.data == [7, 64] })
+    }
+
+    func testExportAppliesChordMuteAndSoloAcrossAllChannels() throws {
+        let song = Song(tracks: [Track(name: "Lead", notes: [Note(pitch: 60, start: 0, duration: 1)])],
+                        chords: [ChordClip(root: 0, quality: .major, start: 0)],
+                        chordSettings: ChannelSettings(solo: true))
+        let file = try parseMIDI(MIDIExporter.data(for: song))
+        XCTAssertNotNil(namedTrack("Chords", in: file))
+        XCTAssertNil(namedTrack("Lead", in: file))
+
+        var mutedSolo = song
+        mutedSolo.chordSettings = ChannelSettings(mute: true, solo: true)
+        let mutedFile = try parseMIDI(MIDIExporter.data(for: mutedSolo))
+        XCTAssertNotNil(namedTrack("Lead", in: mutedFile))
+        XCTAssertNil(namedTrack("Chords", in: mutedFile))
+    }
+
     private struct ParsedEvent {
         let tick: Int
         let status: UInt8
@@ -105,6 +140,12 @@ final class MIDIExporterTests: XCTestCase {
         }
         XCTAssertEqual(offset, bytes.count)
         return ParsedFile(format: format, ticksPerQuarter: ticksPerQuarter, tracks: tracks)
+    }
+
+    private func namedTrack(_ name: String, in file: ParsedFile) -> [ParsedEvent]? {
+        file.tracks.first { track in
+            track.contains { $0.metaType == 0x03 && String(decoding: $0.data, as: UTF8.self) == name }
+        }
     }
 
     private func readUInt32(_ bytes: [UInt8], at offset: Int) throws -> UInt32 {

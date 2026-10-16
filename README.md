@@ -19,6 +19,8 @@ Click a palette circle to audition; double-click to append, or drag it onto the 
 
 Select a timeline chord to edit inversions or individual pitches. Drag chords to move; drag their right edge to resize; Option-drag to duplicate. Create section ranges and set a loop from their context menus. Click the timeline to position playback.
 
+The Chords channel and each melody track have independent instrument, volume, pan, mute and solo controls. Muted solo channels do not suppress other channels. Projects saved before these controls were added reopen with the default centered piano chord sound and centered melody tracks.
+
 Select or add a melody track, then click the piano roll to insert notes. Double-click removes notes. Shift-click or drag an empty region selects multiple notes. Drag notes to move, Option-drag to duplicate, and drag either edge to alter length. Velocity mode changes vertical drag to velocity. Other tracks appear as ghost notes. Mint/purple bands show chord roots/tones, blue rows show remaining scale tones. Right-click notes to derive a custom chord.
 
 Space plays/pauses; period stops/rewinds. Command-Z/Shift-Command-Z undo/redo; Command-X/C/V and Command-A edit notes. Up/down transpose notes; Shift adds octave transposition. Save uses an independently versioned `.hsketch` JSON document. Import Klimper Project performs a best-effort `.klp` conversion and explains fields that cannot be preserved. MIDI export saves the full composition; Drag MIDI exports selected notes, sections, chords, or the current track. Select a CoreMIDI output device in the track sidebar to route playback externally. SF2/DLS soundbanks can replace the system General MIDI sounds.

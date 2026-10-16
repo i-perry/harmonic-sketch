@@ -9,7 +9,7 @@ final class KlimperImporterTests: XCTestCase {
             "bpm": 96, "_start": 0, "_end": 12, "looping": true,
             "tracks": [["id": "t1", "name": "Lead", "volume": 0.7, "pan": 0.25,
                          "mute": false, "solo": false, "instrument": "Piano"]],
-            "chord_track": ["volume": 1.0, "pan": 0.0, "mute": false, "solo": false, "instrument": "Chord"],
+            "chord_track": ["volume": 0.65, "pan": -0.4, "mute": true, "solo": false, "instrument": "Chord"],
             "sections": [
                 ["id": "s1", "name": "Verse", "color": ["r": 1, "g": 0, "b": 0, "a": 1],
                  "length": 4, "children": ["clips": [
@@ -28,7 +28,12 @@ final class KlimperImporterTests: XCTestCase {
         XCTAssertEqual(result.song.chords.first?.pitches, [50, 53, 57])
         XCTAssertEqual(result.song.tracks.first?.notes.first?.start, 1.5)
         XCTAssertEqual(result.song.tracks.first?.notes.first?.velocity, 102)
-        XCTAssertTrue(result.warnings.contains { $0.contains("pan") })
+        XCTAssertEqual(result.song.tracks.first?.pan, 0.25)
+        XCTAssertEqual(result.song.chordChannel.volume, 0.65)
+        XCTAssertEqual(result.song.chordChannel.pan, -0.4)
+        XCTAssertTrue(result.song.chordChannel.mute)
+        XCTAssertTrue(result.warnings.contains { $0.contains("instrument descriptor") })
+        XCTAssertFalse(result.warnings.contains { $0.contains("pan") })
     }
 
     func testRejectsUnknownChildrenShapeInsteadOfDroppingContent() throws {

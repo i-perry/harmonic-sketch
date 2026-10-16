@@ -50,6 +50,7 @@ enum PlaybackTimeline {
     private var active: [ActiveVoice] = []
     private var midiPrograms: [Int: Int] = [:]
     private var midiVolumes: [Int: Double] = [:]
+    private var midiPans: [Int: Double] = [:]
     private var previewWorkItems: [DispatchWorkItem] = []
     private var activePreviewMIDIPitches = Set<Int>()
     private(set) var soundFont: URL?
@@ -78,22 +79,20 @@ enum PlaybackTimeline {
         midi.onDestinationChanged = { [weak self] in
             self?.midiPrograms.removeAll()
             self?.midiVolumes.removeAll()
+            self?.midiPans.removeAll()
         }
         midi.onError = { [weak self] message in self?.onError?(message) }
     }
 
     func prepare(_ song: Song) throws {
         if !engine.isRunning { try engine.start() }
-        try ensureProgramLoaded(0, program: 0)
-        try ensureProgramLoaded(Self.previewSamplerIndex, program: 0)
-        if midiPrograms[0] != 0 {
-            midi.programChange(program: 0, channel: 0)
-            midiPrograms[0] = 0
-        }
-        if midiVolumes[0] == nil {
-            midi.setVolume(0.8, channel: 0)
-            midiVolumes[0] = 0.8
-        }
+        try ensureProgramLoaded(0, program: song.chordChannel.instrument)
+        try ensureProgramLoaded(Self.previewSamplerIndex, program: song.chordChannel.instrument)
+        samplers[Self.chordSamplerIndex].volume = Float(song.chordChannel.volume)
+        samplers[Self.chordSamplerIndex].pan = Float(song.chordChannel.pan)
+        samplers[Self.previewSamplerIndex].volume = Float(song.chordChannel.volume)
+        samplers[Self.previewSamplerIndex].pan = Float(song.chordChannel.pan)
+        configureChordMIDI(song.chordChannel)
         for (index, track) in song.tracks.prefix(15).enumerated() {
             try ensureProgramLoaded(index + Self.firstTrackSamplerIndex, program: track.instrument)
         }
@@ -178,7 +177,6 @@ enum PlaybackTimeline {
         }
         let absoluteBeat = clock.advance(to: now, tempo: song.tempo)
         playbackClock = clock
-        configureChordMIDI()
         let position: Double
         let currentCycle: Int?
         if looping, song.loopEnd > song.loopStart, absoluteBeat >= song.loopEnd {
@@ -202,7 +200,8 @@ enum PlaybackTimeline {
             loopCycle = nil
         }
 
-        let audibleTracks = audibleTracks(in: song)
+        let audibleTracks = MixingPolicy.audibleTracks(in: song)
+        let chordIsAudible = MixingPolicy.includesChordTrack(in: song)
         let layout = song.tracks.map(\.id)
         if layout != trackLayout {
             silence()
@@ -210,17 +209,32 @@ enum PlaybackTimeline {
             trackLayout = layout
             isFirstPlaybackTick = true
         }
-        stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set(audibleTracks.map(\.id)), song: song)
+        stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set(audibleTracks.map(\.id)),
+                                         chordIsAudible: chordIsAudible, song: song)
         stopExpiredVoices(at: position)
 
         do {
+            if loadedPrograms[Self.chordSamplerIndex] != song.chordChannel.instrument {
+                let chordVoices = active.filter { $0.chordID != nil }
+                for voice in chordVoices { stop(voice); if let chordID = voice.chordID { startedChordIDs.remove(chordID) } }
+                active.removeAll { $0.chordID != nil }
+            }
+            try ensureProgramLoaded(Self.chordSamplerIndex, program: song.chordChannel.instrument)
+            samplers[Self.chordSamplerIndex].volume = Float(song.chordChannel.volume)
+            samplers[Self.chordSamplerIndex].pan = Float(song.chordChannel.pan)
+            configureChordMIDI(song.chordChannel)
             let channelByIndex = Dictionary(uniqueKeysWithValues: Self.melodicChannels.enumerated().map { ($0.offset, $0.element) })
             for (index, track) in song.tracks.prefix(15).enumerated() where audibleTracks.contains(where: { $0.id == track.id }) {
                 try ensureProgramLoaded(index + Self.firstTrackSamplerIndex, program: track.instrument)
                 samplers[index + Self.firstTrackSamplerIndex].volume = Float(track.volume)
+                samplers[index + Self.firstTrackSamplerIndex].pan = Float(track.pan ?? 0)
                 if let channel = channelByIndex[index] {
                     if midiPrograms[channel] != track.instrument {
-                        for voice in active where voice.trackID == track.id { stop(voice) }
+                        let trackVoices = active.filter { $0.trackID == track.id }
+                        for voice in trackVoices {
+                            stop(voice)
+                            if let noteID = voice.noteID { startedNoteIDs.remove(noteID) }
+                        }
                         active.removeAll { $0.trackID == track.id }
                         midi.programChange(program: track.instrument, channel: channel)
                         midiPrograms[channel] = track.instrument
@@ -228,6 +242,11 @@ enum PlaybackTimeline {
                     if midiVolumes[channel] != track.volume {
                         midi.setVolume(track.volume, channel: channel)
                         midiVolumes[channel] = track.volume
+                    }
+                    let pan = track.pan ?? 0
+                    if midiPans[channel] != pan {
+                        midi.setPan(pan, channel: channel)
+                        midiPans[channel] = pan
                     }
                 }
                 for note in track.notes where !startedNoteIDs.contains(note.id) {
@@ -241,7 +260,7 @@ enum PlaybackTimeline {
                     }
                 }
             }
-            for chord in song.chords where !startedChordIDs.contains(chord.id) {
+            for chord in song.chords where chordIsAudible && !startedChordIDs.contains(chord.id) {
                 let crossed = chord.start > previousBeat && chord.start <= position && chord.start + chord.duration > position
                 let sustainingAtPosition = chord.start <= position && chord.start + chord.duration > position
                 if crossed || sustainingAtPosition {
@@ -253,7 +272,10 @@ enum PlaybackTimeline {
                 }
             }
         } catch {
+            stop()
             onError?(error.localizedDescription)
+            onStopped?()
+            return
         }
 
         previousBeat = position
@@ -267,24 +289,22 @@ enum PlaybackTimeline {
         }
     }
 
-    private func audibleTracks(in song: Song) -> [Track] {
-        let unmuted = song.tracks.filter { !$0.mute }
-        let hasSolo = unmuted.contains(where: \.solo)
-        return unmuted.filter { !hasSolo || $0.solo }
-    }
-
-    private func configureChordMIDI() {
-        if midiPrograms[0] != 0 {
-            midi.programChange(program: 0, channel: 0)
-            midiPrograms[0] = 0
+    private func configureChordMIDI(_ settings: ChannelSettings) {
+        if midiPrograms[0] != settings.instrument {
+            midi.programChange(program: settings.instrument, channel: 0)
+            midiPrograms[0] = settings.instrument
         }
-        if midiVolumes[0] != 0.8 {
-            midi.setVolume(0.8, channel: 0)
-            midiVolumes[0] = 0.8
+        if midiVolumes[0] != settings.volume {
+            midi.setVolume(settings.volume, channel: 0)
+            midiVolumes[0] = settings.volume
+        }
+        if midiPans[0] != settings.pan {
+            midi.setPan(settings.pan, channel: 0)
+            midiPans[0] = settings.pan
         }
     }
 
-    private func stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set<UUID>, song: Song) {
+    private func stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set<UUID>, chordIsAudible: Bool, song: Song) {
         let availableNoteIDs = Set(song.tracks.flatMap(\.notes).map(\.id))
         for voice in active where voice.trackID.map({ !audibleTrackIDs.contains($0) }) == true
                 || voice.noteID.map({ !availableNoteIDs.contains($0) }) == true {
@@ -296,7 +316,7 @@ enum PlaybackTimeline {
         }
         let audibleNoteIDs = Set(song.tracks.filter { audibleTrackIDs.contains($0.id) }.flatMap(\.notes).map(\.id))
         startedNoteIDs.formIntersection(audibleNoteIDs)
-        let availableChordIDs = Set(song.chords.map(\.id))
+        let availableChordIDs = chordIsAudible ? Set(song.chords.map(\.id)) : []
         for voice in active where voice.chordID.map({ !availableChordIDs.contains($0) }) == true { stop(voice) }
         active.removeAll { $0.chordID.map { !availableChordIDs.contains($0) } == true }
         startedChordIDs.formIntersection(availableChordIDs)

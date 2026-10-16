@@ -12,7 +12,7 @@ Reference: installed Klimper 2.4, universal macOS executable. Official [chord ma
 | Arrangement | Append/drop/move/duplicate/delete/resize chords; direct voicing and inversion edits. |
 | Sections | Named flat ranges, content-aware move/resize/Option-duplicate, loop range context action. Recursive subsections are flattened; editing remains flat. |
 | Piano roll | Create/delete/move/duplicate notes, both-end length edits, velocity, marquee/Shift selection, ghost notes and harmony guides. |
-| Tracks | Up to 14 melody tracks plus chord track, add/remove/rename, mute/solo/volume, eight GM preset choices. Explicit channel capacity keeps live and exported MIDI consistent. |
+| Tracks | Up to 14 melody tracks plus chord track, melody add/remove/rename, independent chord and melody mute/solo/volume/pan/instrument controls. Explicit channel capacity keeps live and exported MIDI consistent. Only unmuted solo channels suppress other channels. |
 | Editing | Snapshot undo/redo, internal note/chord/section clipboard, transpose, horizontal/vertical zoom, snap including triplets. Cross-app note clipboard is not implemented. |
 | Playback | Tempo, play/pause/rewind, loop bounds, system sampler, SF2/DLS loading. Not a hard realtime DAW engine. |
 | Files | Validated versioned independent JSON format; best-effort `.klp` importer based on static schema evidence, with explicit fidelity warnings. Not lossless `.klp` round-trip compatibility. Dirty document prompts and remembered Save URL. |
