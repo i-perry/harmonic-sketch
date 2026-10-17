@@ -45,6 +45,10 @@ enum ProjectPersistence {
         guard song.tracks.count <= maximumTracks, song.chords.count <= 100_000, song.sections.count <= 10_000 else {
             throw PersistenceError.invalidSong("Project exceeds supported collection sizes.")
         }
+        if let nativeSections = song.nativeSections {
+            var sectionCount = 0
+            try validateNativeSections(nativeSections, depth: 0, count: &sectionCount)
+        }
         guard !song.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PersistenceError.invalidSong("Title cannot be empty.")
         }
@@ -103,6 +107,22 @@ enum ProjectPersistence {
             guard section.start.isFinite, section.duration.isFinite, section.start >= 0, section.duration > 0,
                   (section.start + section.duration).isFinite, section.start + section.duration <= maximumBeat else {
                 throw PersistenceError.invalidSong("Sections require finite, nonnegative timing with positive duration.")
+            }
+        }
+    }
+
+    private static func validateNativeSections(_ sections: [KlimperSection], depth: Int,
+                                               count: inout Int) throws {
+        guard depth < 64 else {
+            throw PersistenceError.invalidSong("Native section nesting exceeds the supported depth of 64.")
+        }
+        count += sections.count
+        guard count <= 10_000 else {
+            throw PersistenceError.invalidSong("Project exceeds the supported count of 10,000 native sections.")
+        }
+        for section in sections {
+            if case let .sections(children, _) = section.children, !children.isEmpty {
+                try validateNativeSections(children, depth: depth + 1, count: &count)
             }
         }
     }

@@ -19,4 +19,99 @@ final class MusicTheoryTests: XCTestCase {
         XCTAssertEqual(chord.pitches.count, 3)
         XCTAssertTrue(chord.pitches.allSatisfy { (0...127).contains($0) })
     }
+
+    func testRecoveredFlowAndContrastVectors() {
+        let cMajor = HarmonyChord.from(root: 0, quality: .major)
+        let gMajor = HarmonyChord.from(root: 7, quality: .major)
+        let dbMajor = HarmonyChord.from(root: 1, quality: .major)
+
+        XCTAssertEqual(MusicTheory.flowScore(first: cMajor, second: cMajor), 1, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.contrastScore(first: cMajor, second: cMajor), 1, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.flowScore(first: cMajor, second: gMajor), Float(1.0 / 6.0), accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.contrastScore(first: cMajor, second: gMajor), Float(7.0 / 12.0), accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.flowScore(first: cMajor, second: dbMajor), 0, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.contrastScore(first: cMajor, second: dbMajor), 1, accuracy: 1e-6)
+    }
+
+    func testRecoveredRelationDefaultsAndMatchNotesDeduplication() {
+        let cMajor = HarmonyChord.from(root: 0, quality: .major)
+
+        XCTAssertEqual(MusicTheory.flowScore(first: nil, second: cMajor), 0.8, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.contrastScore(first: nil, second: cMajor), 0.8, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.matchNotesScore(selection: nil, second: cMajor), 0.8, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.matchNotesScore(selection: [60, 64, 76], second: cMajor), 1, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.matchNotesScore(selection: [60, 61, 64], second: cMajor), Float(2.0 / 3.0), accuracy: 1e-6)
+        XCTAssertTrue(MusicTheory.matchNotesScore(selection: [], second: cMajor).isNaN)
+    }
+
+    func testPaletteFlowAndContrastUseRecoveredCallbackScores() {
+        let source = ChordClip(root: 0, quality: .major, start: 0, customPitches: [36, 48, 52])
+
+        XCTAssertEqual(MusicTheory.relation(from: source, root: 7, quality: .major, mode: .flow), Double(Float(1.0 / 6.0)), accuracy: 1e-7)
+        XCTAssertEqual(MusicTheory.relation(from: source, root: 7, quality: .major, mode: .contrast), Double(Float(7.0 / 12.0)), accuracy: 1e-7)
+        XCTAssertEqual(MusicTheory.relation(from: nil, root: 7, quality: .major, mode: .flow), 0.8, accuracy: 1e-7)
+        XCTAssertEqual(MusicTheory.relation(from: nil, root: 7, quality: .major, mode: .contrast), 0.8, accuracy: 1e-7)
+    }
+
+    func testPaletteTonalOrdinaryBranchUsesRecoveredPredicates() {
+        let dMinor = ChordClip(root: 2, quality: .minor, start: 0)
+
+        XCTAssertEqual(MusicTheory.relation(from: dMinor, root: 4, quality: .minor, mode: .tonal, key: 0), 0.7, accuracy: 1e-7)
+        XCTAssertEqual(MusicTheory.relation(from: dMinor, root: 5, quality: .major, mode: .tonal, key: 0), 0, accuracy: 1e-7)
+        XCTAssertEqual(MusicTheory.relation(from: nil, root: 4, quality: .minor, mode: .tonal, key: 0), 0.8, accuracy: 1e-7)
+        XCTAssertEqual(MusicTheory.relation(from: ChordClip(root: 7, quality: .major, start: 0), root: 0, quality: .major, mode: .tonal, key: 0), 1, accuracy: 1e-7)
+    }
+
+    func testRecoveredTonalSuspensionVectors() {
+        let vectors: [(HarmonyChord, HarmonyChord, Float)] = [
+            (HarmonyChord(root: 0, intervalOffsets: [2]), HarmonyChord(root: 0, intervalOffsets: [3]), 1),
+            (HarmonyChord(root: 0, intervalOffsets: [2]), HarmonyChord(root: 0, intervalOffsets: [4]), 1),
+            (HarmonyChord(root: 0, intervalOffsets: [5]), HarmonyChord(root: 0, intervalOffsets: [4]), 1),
+            (HarmonyChord(root: 0, intervalOffsets: [5]), HarmonyChord(root: 0, intervalOffsets: [3]), 1),
+            (HarmonyChord(root: 0, intervalOffsets: [2, 5]), HarmonyChord(root: 9, intervalOffsets: [4]), 1),
+            (HarmonyChord(root: 0, intervalOffsets: [2, 5]), HarmonyChord(root: 0, intervalOffsets: [3]), 0),
+            (HarmonyChord(root: 0, intervalOffsets: [2]), HarmonyChord(root: 11, intervalOffsets: [3, 4]), 0),
+            (HarmonyChord(root: 0, intervalOffsets: [2]), HarmonyChord(root: 0, intervalOffsets: [5]), 0),
+            (HarmonyChord(root: 0, intervalOffsets: [5]), HarmonyChord(root: 0, intervalOffsets: [2]), 0),
+            (HarmonyChord(root: 0, intervalOffsets: [2]), HarmonyChord(root: 0, intervalOffsets: [2]), Float(bitPattern: 0x3f333333)),
+            (HarmonyChord(root: 0, intervalOffsets: [4, 7]), HarmonyChord(root: 2, intervalOffsets: [2]), Float(bitPattern: 0x3f333333)),
+            (HarmonyChord(root: 0, intervalOffsets: [4, 7]), HarmonyChord(root: 2, intervalOffsets: [5]), Float(bitPattern: 0x3f333333)),
+            (HarmonyChord(root: 0, intervalOffsets: [7]), HarmonyChord(root: 2, intervalOffsets: [2, 5]), 0),
+            (HarmonyChord(root: 11, intervalOffsets: [2]), HarmonyChord(root: 11, intervalOffsets: [3]), 1),
+            (HarmonyChord(root: 0, intervalOffsets: [14]), HarmonyChord(root: 0, intervalOffsets: [3]), 1),
+        ]
+
+        for (index, vector) in vectors.enumerated() {
+            XCTAssertEqual(MusicTheory.tonalScore(first: vector.0, second: vector.1, key: 0), vector.2, accuracy: 1e-6, "vector \(index + 1)")
+        }
+        XCTAssertEqual(MusicTheory.tonalScore(first: vectors[0].0, second: vectors[0].1, key: 7), 1, accuracy: 1e-6)
+    }
+
+    func testTonalPreservesCallbackOrderAndExactIntervalMembership() {
+        let sus2 = HarmonyChord(root: 0, intervalOffsets: [2])
+        let sus4 = HarmonyChord(root: 0, intervalOffsets: [5])
+        XCTAssertEqual(MusicTheory.tonalScore(first: sus2, second: sus4, key: 0), 0)
+        XCTAssertEqual(MusicTheory.tonalScore(first: sus4, second: sus2, key: 0), 0)
+
+        let third = HarmonyChord(root: 0, intervalOffsets: [3])
+        XCTAssertEqual(MusicTheory.tonalScore(first: sus2, second: third, key: 0), 1)
+        XCTAssertEqual(MusicTheory.tonalScore(first: third, second: sus2, key: 0), 0)
+
+        let exactTwo = HarmonyChord(root: 0, intervalOffsets: [2])
+        let octaveTwo = HarmonyChord(root: 0, intervalOffsets: [14])
+        let sameRootThird = HarmonyChord(root: 0, intervalOffsets: [3])
+        XCTAssertEqual(MusicTheory.tonalScore(first: exactTwo, second: sameRootThird, key: 0), 1)
+        XCTAssertEqual(MusicTheory.tonalScore(first: octaveTwo, second: sameRootThird, key: 0), 1)
+        XCTAssertEqual(MusicTheory.tonalScore(first: HarmonyChord(root: 1, intervalOffsets: [14]), second: HarmonyChord(root: 4, intervalOffsets: [3]), key: 0), 0)
+    }
+
+    func testRecoveredHarmonyUsesPitchClassOverlapAndExactIntervalEquality() {
+        let cMajor = HarmonyChord.from(root: 0, quality: .major)
+        let octaveAltered = HarmonyChord(root: 0, intervalOffsets: [4, 19])
+
+        XCTAssertEqual(MusicTheory.contrastScore(first: cMajor, second: cMajor), 1, accuracy: 1e-6)
+        XCTAssertEqual(MusicTheory.flowScore(first: cMajor, second: octaveAltered), 1, accuracy: 1e-6)
+        XCTAssertNotEqual(cMajor, octaveAltered)
+        XCTAssertEqual(MusicTheory.contrastScore(first: cMajor, second: octaveAltered), 0, accuracy: 1e-6)
+    }
 }

@@ -2,6 +2,10 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+@MainActor final class PlaybackPosition: ObservableObject {
+    @Published var beat: Double = 0
+}
+
 @MainActor final class ComposerStore: ObservableObject {
     @Published var song = Song()
     @Published var selectedTrack = 0
@@ -10,7 +14,10 @@ import UniformTypeIdentifiers
     @Published var selectedSections: Set<UUID> = []
     @Published var cursorBeat: Double = 0
     @Published var selectedNotes: Set<UUID> = []
-    @Published var playhead: Double = 0
+    var playhead: Double {
+        get { position.beat }
+        set { position.beat = newValue }
+    }
     @Published var playing = false
     @Published var looping = true
     @Published var snap: Double = 0.5
@@ -27,7 +34,16 @@ import UniformTypeIdentifiers
     @Published var previewVelocity = 90
     @Published private(set) var revision = 0
     @Published private(set) var documentURL: URL?
-    let audio = PlaybackEngine()
+    let position = PlaybackPosition()
+    lazy var audio: PlaybackEngine = {
+        let engine = PlaybackEngine()
+        engine.onBeat = { [weak self] beat in self?.position.beat = beat }
+        engine.onError = { [weak self] message in self?.error = message; self?.playing = false }
+        engine.onStopped = { [weak self] in self?.playing = false }
+        engine.midi.onError = { [weak self] message in self?.error = message }
+        if let midiError = engine.midi.lastError { error = midiError }
+        return engine
+    }()
     private var undoStack: [Song] = []
     private var redoStack: [Song] = []
     private var clipboard: [Note] = []
@@ -41,11 +57,6 @@ import UniformTypeIdentifiers
     var length: Double { max(32, song.loopEnd, (song.chords.map { $0.start + $0.duration }.max() ?? 0) + 4, (song.tracks.flatMap(\.notes).map { $0.start + $0.duration }.max() ?? 0) + 4) }
     init() {
         savedSong = song
-        audio.onBeat = { [weak self] beat in self?.playhead = beat }
-        audio.onError = { [weak self] message in self?.error = message; self?.playing = false }
-        audio.onStopped = { [weak self] in self?.playing = false }
-        audio.midi.onError = { [weak self] message in self?.error = message }
-        if let midiError = audio.midi.lastError { error = midiError }
     }
     var dirty: Bool { song != savedSong }
     func confirmDiscard() -> Bool {
@@ -57,8 +68,11 @@ import UniformTypeIdentifiers
         return result == .alertThirdButtonReturn
     }
     func confirmClose() -> Bool { guard confirmDiscard() else { return false }; audio.stop(); savedSong = song; return true }
-    func mutate(_ change: (inout Song) -> Void) {
-        undoStack.append(song); redoStack.removeAll(); change(&song); revision += 1
+    func mutate(synchronizesNativeSections: Bool = false, _ change: (inout Song) -> Void) {
+        let previous = song
+        undoStack.append(song); redoStack.removeAll(); change(&song)
+        song.recordSectionProjectionEdit(comparedTo: previous, nativeFieldsSynchronized: synchronizesNativeSections)
+        revision += 1
     }
     func quantize(_ beat: Double) -> Double { guard beat.isFinite else { return 0 }; return min(16380, max(0, snap == 0 ? beat : (beat / snap).rounded() * snap)) }
     func undo() { guard let old = undoStack.popLast() else { return }; redoStack.append(song); song = old; revision += 1 }
@@ -74,7 +88,10 @@ import UniformTypeIdentifiers
     }
     func togglePlay() {
         if playing { audio.stop(); playing = false; return }
-        do { try audio.play(songProvider: { [weak self] in self?.song ?? Song() }, from: playhead >= song.loopEnd && looping ? song.loopStart : playhead, looping: { [weak self] in self?.looping ?? false }); playing = true }
+        do {
+            try audio.play(songProvider: { [weak self] in self?.song ?? Song() }, from: playhead >= song.loopEnd && looping ? song.loopStart : playhead, looping: { [weak self] in self?.looping ?? false })
+            playing = true
+        }
         catch { self.error = error.localizedDescription }
     }
     func stop() { audio.stop(); playing = false; playhead = song.loopStart }
@@ -161,6 +178,21 @@ import UniformTypeIdentifiers
             else if let index = song.sections.firstIndex(where: { $0.id == section.id }) { song.sections[index] = result }
         }
     }
+    func renameSection(_ section: SongSection, name: String) {
+        guard let index = song.sections.firstIndex(where: { $0.id == section.id }) else { return }
+        let path = section.nativePath
+        let canSynchronize = song.nativeSectionFidelity == .preserved && (path.map { candidate in
+            guard let nativeSections = song.nativeSections else { return false }
+            return (try? candidate.resolve(in: nativeSections)) != nil
+        } ?? false)
+        mutate(synchronizesNativeSections: canSynchronize) { song in
+            song.sections[index].name = name
+            if canSynchronize, let path, var nativeSections = song.nativeSections {
+                _ = path.setName(name, in: &nativeSections)
+                song.nativeSections = nativeSections
+            }
+        }
+    }
     func moveChords(_ chord: ChordClip, delta: Double, duplicate: Bool) {
         let ids = selectedChords.contains(chord.id) ? selectedChords : [chord.id]
         let chosen = song.chords.filter { ids.contains($0.id) }
@@ -189,8 +221,9 @@ import UniformTypeIdentifiers
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 let imported = try KlimperImporter.loadWithWarnings(from: url)
-                stop(); mutate { $0 = imported.song }
-                if song.tracks.isEmpty { song.tracks = [Track(name: "Melody")] }
+                var importedSong = imported.song
+                if importedSong.tracks.isEmpty { importedSong.tracks = [Track(name: "Melody")] }
+                stop(); mutate { $0 = importedSong }
                 documentURL = nil; selectedTrack = 0; selectedNotes = []; selectedChords = []; selectedSections = []; selectedChord = nil
                 if !imported.warnings.isEmpty { let alert = NSAlert(); alert.messageText = "Project imported with differences"; alert.informativeText = imported.warnings.joined(separator: "\n"); alert.runModal() }
             } catch { self.error = error.localizedDescription }

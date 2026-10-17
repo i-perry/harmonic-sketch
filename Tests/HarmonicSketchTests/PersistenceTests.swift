@@ -70,6 +70,7 @@ final class PersistenceTests: XCTestCase {
         var project = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         var storedSong = try XCTUnwrap(project["song"] as? [String: Any])
         storedSong.removeValue(forKey: "chordSettings")
+        storedSong.removeValue(forKey: "nativeSections")
         let storedTracks = try XCTUnwrap(storedSong["tracks"] as? [[String: Any]])
         storedSong["tracks"] = storedTracks.map { track -> [String: Any] in
             var oldTrack = track
@@ -81,6 +82,7 @@ final class PersistenceTests: XCTestCase {
 
         let loaded = try ProjectPersistence.load(from: url)
         XCTAssertNil(loaded.chordSettings)
+        XCTAssertNil(loaded.nativeSections)
         XCTAssertEqual(loaded.chordChannel, ChannelSettings())
         XCTAssertNil(loaded.tracks[0].pan)
     }

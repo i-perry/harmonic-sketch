@@ -1,0 +1,37 @@
+# Klimper project model: static evidence ledger
+
+This note records fresh REA/Ghidra observations for the installed Klimper 2.4 ARM64 executable. It describes serialized shapes and what those shapes do not establish. It does not claim runtime behavior or source-code equivalence.
+
+## Target and evidence
+
+- Target: `/Users/isaac/Projects/KlimperClone/research/Klimper-arm64`, SHA-256 `3f26469013c1d3ac1cde475d851641da312c3100aa5ad452fdb6ebc737476d41`.
+- Provider: Ghidra 12.1.4, ARM64, ephemeral source-immutable import.
+- Complete retained REA bundle: [`rea-project-evidence.json`](../../research/rea-project-evidence.json), 11 records. The bundle preserves the full dossiers, views, their limitations, and artifact identity.
+- Function dossier Evidence IDs: project serializer `ev_a58a7692fefa72c536843abab6d436e4b9b089c9cbdbe54923f6123e256bb084`; project reader `ev_c484b602aa9c689232d4a425f24d6c88d8741c6181502d5222e83daafe8f6991` (large response read through retained pseudocode view `ev_59912403cd72e51b56ac3bbabc9f238374881e2b80b8fa185d909f3d71fd23a6`); scale serializer `ev_a8e3ccb5cb7e901b027fbe0338af48690ba4c80945e2c028964a036ff151d8d9`; section serializer `ev_b45d766071d21a280614a368efd50ffa2d6016291f4abc49b5e7e4ee1c9fe465`; chord serializer `ev_28a789c59da99977d9baa06b2a8530d1be5c45d7a5c5018a9a7252d627f00f7b`; note serializer `ev_5ae6f6a575bd2aa6e6d31667e01c8a481f15e61287fb56a3d26062a464c709c0`; note-array serializer `ev_47875286901fd0dcca02b2307367f64fdb954e42f20d1d19e94949c90e9cbaa0`.
+
+REA dossiers combine Ghidra's function manager, listing, reference manager, CFG, and decompiler. Pseudocode is decompiler output, not original source. The project reader's complete inline response exceeded the MCP transport budget; its retained Evidence was read in a bounded pseudocode page. No original `.klp` fixture or controlled app session was used here.
+
+## Observed serialized shapes
+
+| Claim | Observation | Evidence and confidence |
+|---|---|---|
+| Project root | The serializer constructs `name`, `scale`, `bpm`, `tracks`, `sections`, `chord_track`, `_start`, `_end`, and `looping`; it adds `ui_state` conditionally. The reader retrieves section and chord-track data and scales `_start`/`_end` by 10368 into internal integers. | Serializer `ev_a58…`; reader `ev_c484…` / view `ev_599…`. Observed static serialization/parsing structure. |
+| Track and chord-track instruments | Both serializers write `instrument` from an internal string-shaped value. The reader decodes it as a string value. The bytes establish a string descriptor, not a General MIDI program number or a mapping to one. | Serializer `ev_a58…`; reader `ev_c484…` / view `ev_599…`. Representation observed; musical meaning unknown. |
+| Scale | `FUN_10000f4f4` emits `root` from an integer and `name` from a string-like field. It walks a vector of 16-bit unsigned entries and writes each entry as an integer in `steps`; it also writes a `type` value. | `ev_a8e…`; also called by section serializer `ev_b45…`. Shape and element width observed; `steps` semantics and `type` domain unknown. In particular, the code does not establish that `steps` are semitone offsets. |
+| Section tree | Each section writes `id`, `name`, RGBA `color` (`r`, `g`, `b`, `a`), `length`, optional `scale`, and `children`. For one children variant, `children.sections` is a recursively serialized array. For the other, `children.clips` contains `chords` and `clipByTrack`. The variant is selected from an internal tag. | `ev_b45…`; nested recursion calls the same function. Observed static serialization structure. |
+| Chord clip | Each chord item has `chord.root`, `chord.intervals`, `length`, and `voicing`. `intervals` is serialized from 16-bit unsigned entries. `length` is converted by dividing an internal integer by 10368. | `ev_28a…`. Observed shape and conversion; interval meaning remains unknown. Playback evidence below derives the musical time scale. |
+| Voicing | `voicing` is not emitted as a bare integer array by this serializer. The chord serializer passes its voicing vector to `FUN_100010d38`, which emits each element using the same `position`, `length`, `pitch`, and `velocity` serializer used for note arrays. | Chord `ev_28a…`; helper `ev_478…`; note `ev_5ae…`. Shared serialized record shape observed. The musical role and coordinate scope of these records are not established. |
+| Per-track clips and notes | `clipByTrack` is built from map entries, with each entry serialized as a pair containing a track key and a list of note records. A note record contains `position`, `length`, `pitch`, and `velocity`. Position and length are each emitted as internal integer divided by 10368; pitch is cast to an integer; velocity is converted from an internal float. | Section `ev_b45…`; helper `ev_478…`; note `ev_5ae…`. Representation and numeric conversions observed. |
+| Time conversion | Several serializers divide integer time fields by `10368.0`; the project reader multiplies `_start` and `_end` by `10368.0`. The playback scheduler uses `bpm / 60000 * 0.25 * 10368` ticks per millisecond. This establishes 10368 ticks per four quarter-note beats for the clone projection. | `ev_5ae…` (note `position` and `length`), `ev_28a…` (chord `length`), `ev_b45…` (section `length`), `ev_a58…` (loop bounds), reader view `ev_599…`, playback `ev_496e7b8f281f98e00a985efcc8ec85294abad4586604117036e84ae8eb075032`. It does not establish whether note `position` is local or global inside nested section content. |
+
+## Questions left open
+
+- **Scale `steps`: unresolved.** The serializer copies unsigned 16-bit values into a JSON integer array. No function inspected here establishes whether these values are pitch classes, intervals, flags, or another encoding.
+- **Note and voicing coordinate scope: unresolved.** `position` is persisted as a numeric field after fixed scaling. The section tree nests clips, but the inspected serializer does not show whether a note position is section-relative, song-relative, or transformed when nested.
+- **Pitch and voicing meaning: unresolved.** `pitch` is an integer field and voicing shares the note record shape. This inspection does not prove MIDI numbering, a valid pitch range, or whether voicing-note timing/velocity is meaningful to playback.
+- **Section resize, move, and duplicate transforms: unresolved.** The persistence serializer establishes section length/order/nesting and clip fields, but not the editing operations or the transformations those operations apply to descendants.
+- **Chord placement: unresolved.** Chord records include a duration but no separately serialized chord-position property in `FUN_1000108a4`. This alone does not prove that chords are laid out sequentially; placement may be represented elsewhere or derived by other code.
+- **Instrument behavior: unresolved.** String persistence does not reveal preset resolution, sound selection, or playback mapping.
+- **Playback-loop toggle and UI state: partial.** `looping` and optional `ui_state` are written at the root. The work here did not trace all reader paths far enough to state how each affects playback or UI restoration.
+
+These gaps should remain explicit in any reconstruction. The importer maps the recovered time scale into quarter-note beats by multiplying serialized time values by four and retains the raw tree unchanged. Static evidence still does not establish nested note-position origin or interaction semantics for section editing, scale interpretation, or instrument playback.

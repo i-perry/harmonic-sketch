@@ -47,7 +47,8 @@ struct PianoRollView: View {
                             Rectangle().fill(Color.white.opacity(0.11)).frame(width: note.duration * store.zoom, height: rowHeight - 3).offset(x: note.start * store.zoom, y: Double(upper - note.pitch) * rowHeight + 1).allowsHitTesting(false)
                         }
                         ForEach(store.track.notes) { note in noteView(note) }
-                        Rectangle().fill(.mint).frame(width: 2, height: Double(upper - lower + 1) * rowHeight).offset(x: store.playhead * store.zoom).allowsHitTesting(false)
+                        PlayheadMarker(position: store.position, zoom: store.zoom, height: Double(upper - lower + 1) * rowHeight)
+                            .allowsHitTesting(false)
                         Rectangle().fill(Color.orange.opacity(0.3)).frame(width: 1, height: Double(upper - lower + 1) * rowHeight).offset(x: store.cursorBeat * store.zoom).allowsHitTesting(false)
                     }
                 }

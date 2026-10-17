@@ -6,6 +6,7 @@ export SWIFTPM_MODULECACHE_OVERRIDE="${TMPDIR:-/private/tmp}/harmonic-sketch-swi
 CONFIGURATION="${1:-release}"
 swift build --disable-sandbox --cache-path "${TMPDIR:-/private/tmp}/harmonic-sketch-package-cache" -c "$CONFIGURATION"
 APP="dist/${HARMONIC_APP_NAME:-Harmonic Sketch}.app"
+BUNDLE_ID="${HARMONIC_APP_BUNDLE_ID:-dev.harmonicsketch.composer}"
 mkdir -p "$APP/Contents/MacOS"
 cp ".build/$CONFIGURATION/HarmonicSketch" "$APP/Contents/MacOS/HarmonicSketch"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -21,5 +22,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+plutil -replace CFBundleIdentifier -string "$BUNDLE_ID" "$APP/Contents/Info.plist"
 codesign --force --deep --sign - "$APP"
 printf 'Built %s\n' "$PWD/$APP"

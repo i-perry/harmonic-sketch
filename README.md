@@ -15,7 +15,7 @@ Use `swift test --disable-sandbox` for tests. Package caches may need writable o
 
 ## Compose
 
-Click a palette circle to audition; double-click to append, or drag it onto the arrangement. Scroll the palette to explore extensions. The seven columns represent scale degrees; filled circles are within the home key. Disable Home to borrow from other keys/modes. Relation outlines use documented original heuristics, not the reference application's undisclosed algorithm.
+Click a palette circle to audition; double-click to append, or drag it onto the arrangement. Scroll the palette to explore extensions. The seven columns represent scale degrees; filled circles are within the home key. Disable Home to borrow from other keys/modes. Relation outlines use callback arithmetic recovered from static analysis, with palette argument and visual mappings still reconstructed.
 
 Select a timeline chord to edit inversions or individual pitches. Drag chords to move; drag their right edge to resize; Option-drag to duplicate. Create section ranges and set a loop from their context menus. Click the timeline to position playback.
 

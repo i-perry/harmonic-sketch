@@ -4,6 +4,7 @@ import Foundation
 struct PlaybackClock {
     private(set) var beat: Double
     private var lastTime: TimeInterval
+    private var fractionalMilliseconds = 0.0
 
     init(beat: Double, time: TimeInterval) {
         self.beat = beat
@@ -11,10 +12,17 @@ struct PlaybackClock {
     }
 
     mutating func advance(to time: TimeInterval, tempo: Double) -> Double {
-        let elapsed = max(0, time - lastTime)
+        let elapsedMilliseconds = max(0, time - lastTime) * 1_000
         lastTime = time
         guard tempo.isFinite, tempo > 0 else { return beat }
-        beat += elapsed * tempo / 60
+        let ticksPerMillisecond = (tempo / 60_000) * 0.25 * 10_368
+        let rawTicks = (ticksPerMillisecond * elapsedMilliseconds).rounded(.towardZero)
+        let rawTickMilliseconds = ((rawTicks / 10_368) * 4 * 60_000) / tempo
+        let carriedMilliseconds = fractionalMilliseconds + (elapsedMilliseconds - rawTickMilliseconds)
+        let carriedTicks = (ticksPerMillisecond * carriedMilliseconds).rounded(.towardZero)
+        let carriedTickMilliseconds = ((carriedTicks / 10_368) * 4 * 60_000) / tempo
+        fractionalMilliseconds = carriedMilliseconds - carriedTickMilliseconds
+        beat += (rawTicks + carriedTicks) / 2_592
         return beat
     }
 }
@@ -31,6 +39,34 @@ enum PlaybackTimeline {
     }
 }
 
+struct PlaybackDisplayThrottle {
+    let minimumInterval: TimeInterval
+    private(set) var lastPublishedAt: TimeInterval?
+
+    init(minimumInterval: TimeInterval = 1.0 / 30.0) {
+        self.minimumInterval = max(0, minimumInterval)
+    }
+
+    mutating func shouldPublish(at time: TimeInterval, force: Bool = false) -> Bool {
+        guard time.isFinite else { return false }
+        if force {
+            lastPublishedAt = time
+            return true
+        }
+        guard let lastPublishedAt else {
+            self.lastPublishedAt = time
+            return true
+        }
+        guard time - lastPublishedAt >= minimumInterval else { return false }
+        self.lastPublishedAt = time
+        return true
+    }
+
+    mutating func reset() {
+        lastPublishedAt = nil
+    }
+}
+
 @MainActor final class PlaybackEngine {
     private static let chordSamplerIndex = 0
     private static let firstTrackSamplerIndex = 1
@@ -40,6 +76,7 @@ enum PlaybackTimeline {
     private var loadedPrograms: [Int: Int] = [:]
     private var timer: Timer?
     private var playbackClock: PlaybackClock?
+    private var displayThrottle = PlaybackDisplayThrottle()
     private var previousBeat = 0.0
     private var isFirstPlaybackTick = true
     private var loopCycle: Int?
@@ -136,6 +173,7 @@ enum PlaybackTimeline {
         let startBeat = max(0, beat.isFinite ? beat : 0)
         let now = Date.timeIntervalSinceReferenceDate
         playbackClock = PlaybackClock(beat: startBeat, time: now)
+        displayThrottle.reset()
         previousBeat = startBeat
         isFirstPlaybackTick = true
         loopCycle = nil
@@ -280,11 +318,11 @@ enum PlaybackTimeline {
 
         previousBeat = position
         isFirstPlaybackTick = false
-        onBeat?(position)
+        if displayThrottle.shouldPublish(at: now) { onBeat?(position) }
         if !looping, position >= PlaybackTimeline.contentEnd(of: song) {
             let endBeat = PlaybackTimeline.contentEnd(of: song)
             stop()
-            onBeat?(endBeat)
+            if displayThrottle.shouldPublish(at: now, force: true) { onBeat?(endBeat) }
             onStopped?()
         }
     }

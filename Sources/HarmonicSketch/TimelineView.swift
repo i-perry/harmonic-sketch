@@ -27,7 +27,7 @@ struct TimelineView: View {
                     Rectangle().fill(Color.mint.opacity(0.12)).frame(width: (store.song.loopEnd - store.song.loopStart) * store.zoom, height: 15).offset(x: store.song.loopStart * store.zoom, y: 17)
                     ForEach(store.song.sections) { section in sectionView(section) }
                     ForEach(store.song.chords) { chord in clipView(chord) }
-                    Rectangle().fill(.mint).frame(width: 2, height: 105).offset(x: store.playhead * store.zoom)
+                    PlayheadMarker(position: store.position, zoom: store.zoom, height: 105)
                 }
                 .contentShape(Rectangle()).onTapGesture { location in store.playhead = store.quantize(location.x / store.zoom) }
                 .onDrop(of: [.text], isTargeted: nil) { providers, location in
