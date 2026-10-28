@@ -123,4 +123,22 @@ final class PlaybackTimelineTests: XCTestCase {
         XCTAssertTrue(PlaybackTimeline.contains(sustained, at: 4))
         XCTAssertFalse(PlaybackTimeline.contains(finished, at: 4))
     }
+
+    func testChordPreviewUsesNativeTickSpacingAndShrinkingDuration() {
+        let events = ChordPreviewTimeline.events(pitches: [48, 52, 55], tempo: 120,
+                                                 spacingSeconds: 0.125, gain: 0.8)
+
+        XCTAssertEqual(events.map(\.startTicks), [0, 648, 1_296])
+        XCTAssertEqual(events.map(\.durationTicks), [10_368, 9_720, 9_072])
+        XCTAssertEqual(events.map(\.velocity), [102, 102, 102])
+    }
+
+    func testChordPreviewClampsDurationAtNativeMinimumAndRejectsInvalidTempo() {
+        let events = ChordPreviewTimeline.events(pitches: [60, 61, 62], tempo: 120,
+                                                 spacingSeconds: 3, gain: 1)
+
+        XCTAssertEqual(events.map(\.durationTicks), [10_368, 162, 162])
+        XCTAssertTrue(ChordPreviewTimeline.events(pitches: [60], tempo: .nan,
+                                                  spacingSeconds: 0, gain: 1).isEmpty)
+    }
 }

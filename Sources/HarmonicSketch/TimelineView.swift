@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct TimelineView: View {
     @EnvironmentObject var store: ComposerStore
     @State private var selectedSection: UUID?
+    @State private var showingSectionTree = false
     var body: some View {
         VStack(spacing: 5) {
             HStack {
@@ -11,8 +12,17 @@ struct TimelineView: View {
                 Button("Section from selection") {
                     let chord = store.chord
                     store.mutate { $0.sections.append(SongSection(name: "Section \($0.sections.count + 1)", start: chord?.start ?? store.playhead, duration: chord?.duration ?? 4)) }
-                }
+                }.disabled(store.song.nativeSections != nil)
+                    .help(store.song.nativeSections == nil ? "Add a timeline section" : "Adding sections to imported native trees is not supported yet")
                 Spacer()
+                if store.song.nativeSections != nil {
+                    Button("Section tree") { showingSectionTree.toggle() }
+                        .popover(isPresented: $showingSectionTree, arrowEdge: .bottom) {
+                            sectionTreePopover.frame(width: 290, height: 340)
+                        }
+                    Text(sectionFidelityLabel).font(.caption2).foregroundStyle(store.song.nativeSectionFidelity == .projectionOutOfSync ? .orange : .secondary)
+                        .help("The hierarchy shows the retained native sections. Timeline edits that cannot be represented in that tree are saved as an out-of-sync projection.")
+                }
                 Text("Loop").font(.caption)
                 TextField("Start", value: Binding(get: { store.song.loopStart }, set: { value in store.mutate { $0.loopStart = max(0, min(value, $0.loopEnd - 0.25)) } }), format: .number).frame(width: 40)
                 TextField("End", value: Binding(get: { store.song.loopEnd }, set: { value in store.mutate { $0.loopEnd = max($0.loopStart + 0.25, value) } }), format: .number).frame(width: 40)
@@ -65,15 +75,90 @@ struct TimelineView: View {
             .contextMenu { Button("Delete") { store.mutate { $0.chords.removeAll { $0.id == chord.id } } }; Button("Duplicate") { var copy = chord; copy.id = UUID(); copy.start += copy.duration; store.mutate { $0.chords.append(copy) } } }
     }
     private func update(_ chord: ChordClip, _ action: (inout ChordClip) -> Void) { store.mutate { song in if let index = song.chords.firstIndex(where: { $0.id == chord.id }) { action(&song.chords[index]) } } }
-    private func sectionView(_ section: SongSection) -> some View {
-        HStack {
+    private var sectionFidelityLabel: String {
+        switch store.song.nativeSectionFidelity {
+        case .preserved: return "Native tree preserved"
+        case .projectionOutOfSync: return "Timeline out of sync"
+        case nil: return "Sync unknown"
+        }
+    }
+    private var sectionTreePopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Native section hierarchy").font(.headline)
+            Text(sectionFidelityLabel).font(.caption).foregroundStyle(store.song.nativeSectionFidelity == .projectionOutOfSync ? .orange : .secondary)
+            if store.song.nativeSectionRoots.isEmpty {
+                Text("No sections were imported.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(store.song.nativeSectionRoots) { node in NativeSectionTreeRow(node: node) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Text("Select a projected row to move the timeline cursor. Rename changes only the saved native name. Timing edits are unavailable for imported sections.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }.padding(12)
+    }
+    @ViewBuilder private func sectionView(_ section: SongSection) -> some View {
+        let isNativeTree = store.song.nativeSections != nil
+        let content = HStack {
             Text(section.name).font(.caption2); Spacer(minLength: 0)
-            Rectangle().fill(.white.opacity(0.4)).frame(width: 7).gesture(DragGesture().onEnded { value in
-                store.transformSection(section, duration: max(0.25, store.quantize(section.duration + value.translation.width / store.zoom)))
-            })
+            if !isNativeTree {
+                Rectangle().fill(.white.opacity(0.4)).frame(width: 7).gesture(DragGesture().onEnded { value in
+                    store.transformSection(section, duration: max(0.25, store.quantize(section.duration + value.translation.width / store.zoom)))
+                })
+            }
         }.padding(.leading, 4).frame(width: max(25, section.duration * store.zoom - 2), height: 21).background(Color.indigo.opacity(store.selectedSections.contains(section.id) ? 0.9 : 0.5)).cornerRadius(3).offset(x: section.start * store.zoom, y: 34)
             .onTapGesture { if NSEvent.modifierFlags.contains(.shift) { if !store.selectedSections.insert(section.id).inserted { store.selectedSections.remove(section.id) } } else { store.selectedSections = [section.id]; store.selectedChords = []; store.selectedChord = nil; store.selectedNotes = [] } }
-            .gesture(DragGesture(minimumDistance: 5).onEnded { value in store.transformSection(section, start: section.start + value.translation.width / store.zoom, duplicate: NSEvent.modifierFlags.contains(.option)) })
-            .contextMenu { Button("Set loop to section") { store.mutate { $0.loopStart = section.start; $0.loopEnd = section.start + section.duration } }; Button("Delete section") { store.mutate { $0.sections.removeAll { $0.id == section.id } } } }
+            .contextMenu {
+                Button("Set loop to section") { store.mutate { $0.loopStart = section.start; $0.loopEnd = section.start + section.duration } }
+                if !isNativeTree { Button("Delete section") { store.mutate { $0.sections.removeAll { $0.id == section.id } } } }
+            }
+        if isNativeTree { content } else {
+            content.gesture(DragGesture(minimumDistance: 5).onEnded { value in
+                store.transformSection(section, start: section.start + value.translation.width / store.zoom, duplicate: NSEvent.modifierFlags.contains(.option))
+            })
+        }
+    }
+}
+
+private struct NativeSectionTreeRow: View {
+    @EnvironmentObject private var store: ComposerStore
+    let node: NativeSectionNode
+    @State private var expanded = true
+    @State private var showingRename = false
+    @State private var renameValue = ""
+
+    var body: some View {
+        Group {
+            if node.children.isEmpty {
+                rowLabel
+            } else {
+                DisclosureGroup(isExpanded: $expanded) {
+                    ForEach(node.children) { child in NativeSectionTreeRow(node: child) }
+                } label: { rowLabel }
+            }
+        }
+        .contextMenu { Button("Rename") { renameValue = node.name; showingRename = true } }
+        .alert("Rename section", isPresented: $showingRename) {
+            TextField("Name", text: $renameValue)
+            Button("Cancel", role: .cancel) { }
+            Button("Rename") { store.renameNativeSection(at: node.path, name: renameValue) }
+        } message: {
+            Text("Only the native section name will change. Timing and child data stay untouched.")
+        }
+    }
+
+    private var rowLabel: some View {
+        let isSelected = store.selectedNativeSectionPath == node.path
+        let hasProjection = store.song.sections.contains { $0.nativePath == node.path }
+        return Button { store.selectNativeSection(at: node.path) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isSelected ? "circle.inset.filled" : "circle").font(.caption2)
+                Text(node.name).lineLimit(1)
+                if !hasProjection { Image(systemName: "info.circle").foregroundStyle(.secondary).help("This native node has no safe flat timeline projection.") }
+                Spacer(minLength: 0)
+            }.contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
 }

@@ -114,6 +114,11 @@ struct Song: Codable, Equatable {
     var loopStart: Double = 0
     var loopEnd: Double = 16
     var chordChannel: ChannelSettings { chordSettings ?? ChannelSettings() }
+    var nativeSectionRoots: [NativeSectionNode] {
+        (nativeSections ?? []).enumerated().map { index, section in
+            NativeSectionNode(section: section, path: KlimperSectionPath(indices: [index]))
+        }
+    }
 
     mutating func recordSectionProjectionEdit(comparedTo previous: Song, nativeFieldsSynchronized: Bool) {
         guard nativeSections != nil else { return }
@@ -212,6 +217,20 @@ struct KlimperSection: Codable, Equatable {
 
     var name: String? { fields["name"]?.stringValue }
     var rawLength: NativeJSONValue? { fields["length"] }
+}
+
+struct NativeSectionNode: Identifiable {
+    let section: KlimperSection
+    let path: KlimperSectionPath
+
+    var id: KlimperSectionPath { path }
+    var name: String { section.name ?? "Unnamed section" }
+    var children: [NativeSectionNode] {
+        guard case let .sections(sections, _) = section.children else { return [] }
+        return sections.enumerated().map { index, child in
+            NativeSectionNode(section: child, path: KlimperSectionPath(indices: path.indices + [index]))
+        }
+    }
 }
 
 struct KlimperSectionPath: Codable, Equatable, Hashable {

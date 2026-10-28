@@ -39,6 +39,33 @@ enum PlaybackTimeline {
     }
 }
 
+struct ChordPreviewEvent {
+    let pitch: Int
+    let startTicks: Int
+    let durationTicks: Int
+    let velocity: Int
+}
+
+enum ChordPreviewTimeline {
+    static let ticksPerBeat = 2_592
+    static let baseDurationTicks = 10_368
+    static let minimumDurationTicks = 162
+
+    static func events(pitches: [Int], tempo: Double, spacingSeconds: Double,
+                       gain: Double) -> [ChordPreviewEvent] {
+        guard tempo.isFinite, tempo > 0 else { return [] }
+        let safeSpacing = spacingSeconds.isFinite ? max(0, spacingSeconds) : 0
+        let ticksPerSecond = tempo / 60 * Double(ticksPerBeat)
+        let velocity = Int((127 * (gain.isFinite ? max(0, gain) : 0)).rounded())
+        return pitches.enumerated().map { index, pitch in
+            let offset = Int((safeSpacing * Double(index) * ticksPerSecond).rounded(.towardZero))
+            return ChordPreviewEvent(pitch: pitch, startTicks: offset,
+                                     durationTicks: max(baseDurationTicks - offset, minimumDurationTicks),
+                                     velocity: min(127, velocity))
+        }
+    }
+}
+
 struct PlaybackDisplayThrottle {
     let minimumInterval: TimeInterval
     private(set) var lastPublishedAt: TimeInterval?
@@ -141,25 +168,30 @@ struct PlaybackDisplayThrottle {
         try prepare(song)
     }
 
-    func preview(_ pitches: [Int], velocity: Int = 90, strum: Double = 0) {
+    func preview(_ pitches: [Int], velocity: Int = 90, strum: Double = 0, tempo: Double = 120) {
         cancelPreview()
-        guard !pitches.isEmpty else { return }
-        let safeVelocity = UInt8(clamping: velocity)
-        for (index, pitch) in pitches.enumerated() {
-            let delay = max(0, Double(index) * strum)
+        let gain = Double(min(127, max(0, velocity))) / 127
+        let events = ChordPreviewTimeline.events(pitches: pitches, tempo: tempo,
+                                                 spacingSeconds: strum, gain: gain)
+        guard !events.isEmpty else { return }
+        for event in events {
+            let secondsPerTick = 4 * 60 / (tempo * Double(ChordPreviewTimeline.baseDurationTicks))
+            let delay = Double(event.startTicks) * secondsPerTick
+            let duration = Double(event.durationTicks) * secondsPerTick
+            let safeVelocity = UInt8(clamping: event.velocity)
             schedulePreview(after: delay) { engine in
                 engine.samplers[Self.previewSamplerIndex].startNote(
-                    UInt8(clamping: pitch), withVelocity: safeVelocity, onChannel: 0
+                    UInt8(clamping: event.pitch), withVelocity: safeVelocity, onChannel: 0
                 )
                 if engine.timer == nil {
-                    engine.activePreviewMIDIPitches.insert(pitch)
-                    engine.midi.noteOn(pitch: pitch, velocity: Int(safeVelocity), channel: 0)
+                    engine.activePreviewMIDIPitches.insert(event.pitch)
+                    engine.midi.noteOn(pitch: event.pitch, velocity: Int(safeVelocity), channel: 0)
                 }
             }
-            schedulePreview(after: delay + 0.7) { engine in
-                engine.samplers[Self.previewSamplerIndex].stopNote(UInt8(clamping: pitch), onChannel: 0)
-                if engine.activePreviewMIDIPitches.remove(pitch) != nil {
-                    engine.midi.noteOff(pitch: pitch, channel: 0)
+            schedulePreview(after: delay + duration) { engine in
+                engine.samplers[Self.previewSamplerIndex].stopNote(UInt8(clamping: event.pitch), onChannel: 0)
+                if engine.activePreviewMIDIPitches.remove(event.pitch) != nil {
+                    engine.midi.noteOff(pitch: event.pitch, channel: 0)
                 }
             }
         }

@@ -213,6 +213,48 @@ final class KlimperImporterTests: XCTestCase {
         XCTAssertNil(legacyTree.nativeSectionFidelity)
     }
 
+    func testNestedProjectionAccumulatesSiblingAndChordOffsetsRecursively() throws {
+        var fixture = baseFixture()
+        fixture["tracks"] = [["id": "t1", "name": "Lead", "volume": 1.0, "pan": 0.0,
+                               "mute": false, "solo": false, "instrument": ""]]
+        let emptyClips: [String: Any] = ["chords": [], "clipByTrack": []]
+        let leafClips: [String: Any] = [
+            "chords": [["chord": ["root": 0, "intervals": [0, 4, 7]], "length": 0.5,
+                         "voicing": [["position": 0, "length": 0.5, "pitch": 60, "velocity": 0.8]]]],
+            "clipByTrack": [["t1", [["position": 0.25, "length": 0.5, "pitch": 72, "velocity": 0.8]]]]
+        ]
+        let firstSiblingClips: [String: Any] = [
+            "chords": [
+                ["chord": ["root": 0, "intervals": [0, 4, 7]], "length": 1,
+                 "voicing": [["position": 0, "length": 1, "pitch": 60, "velocity": 0.8]]],
+                ["chord": ["root": 2, "intervals": [0, 3, 7]], "length": 0.5,
+                 "voicing": [["position": 0, "length": 0.5, "pitch": 62, "velocity": 0.8]]]
+            ],
+            "clipByTrack": [["t1", [["position": 0.5, "length": 0.5, "pitch": 69, "velocity": 0.8]]]]
+        ]
+        fixture["sections"] = [
+            ["name": "Root", "length": 8, "color": [:], "children": ["sections": [
+                ["name": "First", "length": 2, "color": [:], "children": ["clips": firstSiblingClips]],
+                ["name": "Second", "length": 6, "color": [:], "children": ["sections": [
+                    ["name": "Grandchild first", "length": 2, "color": [:],
+                     "children": ["clips": leafClips]],
+                    ["name": "Grandchild second", "length": 4, "color": [:],
+                     "children": ["clips": emptyClips]]
+                ]]]
+            ]]],
+            ["name": "After root", "length": 2, "color": [:], "children": ["clips": leafClips]]
+        ]
+
+        let song = try importFixture(fixture).song
+        XCTAssertEqual(song.sections.map(\.name), [
+            "First", "Grandchild first", "Grandchild second", "After root"
+        ])
+        XCTAssertEqual(song.sections.map(\.start), [0, 8, 16, 32])
+        XCTAssertEqual(song.tracks[0].notes.map(\.start), [2, 9, 33])
+        XCTAssertEqual(song.chords.map(\.start), [0, 4, 8, 32])
+        XCTAssertEqual(song.chords.map(\.duration), [4, 2, 2, 2])
+    }
+
     func testNativeNameEditByPathPreservesRawLengthAndChildren() throws {
         var fixture = baseFixture()
         fixture["sections"] = [[
@@ -240,6 +282,57 @@ final class KlimperImporterTests: XCTestCase {
         legacyEdit.sections[0].name = "Changed"
         legacyEdit.recordSectionProjectionEdit(comparedTo: legacyNativeTree, nativeFieldsSynchronized: true)
         XCTAssertNil(legacyEdit.nativeSectionFidelity, "Missing historical fidelity must remain unknown.")
+    }
+
+    @MainActor func testSectionTreeSelectionAndRenameUseStableNestedPaths() throws {
+        var fixture = baseFixture()
+        fixture["sections"] = [[
+            "name": "Root", "length": 8, "color": [:], "children": ["sections": [
+                ["name": "Earlier", "length": 3, "color": [:],
+                 "children": ["clips": ["chords": [], "clipByTrack": []]]],
+                ["name": "Container", "length": 5, "color": [:], "children": ["sections": [
+                    ["name": "Leaf", "length": 2, "color": [:],
+                     "children": ["clips": ["chords": [], "clipByTrack": []]]]
+                ]]]
+            ]]
+        ]]
+        let imported = try importFixture(fixture).song
+        let store = ComposerStore()
+        store.song = imported
+        let leafPath = KlimperSectionPath(indices: [0, 1, 0])
+        let originalRoot = try XCTUnwrap(try XCTUnwrap(imported.nativeSections).first)
+        guard case let .sections(rootChildren, _) = originalRoot.children,
+              case .sections = rootChildren[1].children else {
+            return XCTFail("Expected nested section children")
+        }
+        XCTAssertEqual(store.song.nativeSectionRoots[0].children[1].children[0].path, leafPath)
+
+        store.selectNativeSection(at: leafPath)
+        XCTAssertEqual(store.selectedNativeSectionPath, leafPath)
+        XCTAssertEqual(store.song.sections.first(where: { $0.nativePath == leafPath })?.start, 12)
+        XCTAssertEqual(store.cursorBeat, 12)
+        store.selectedChords = [UUID()]
+        store.selectedNotes = [UUID()]
+        store.selectNativeSection(at: KlimperSectionPath(indices: [0]))
+        XCTAssertTrue(store.selectedSections.isEmpty, "A container omitted from the flat projection should not select a timeline row.")
+        XCTAssertTrue(store.selectedChords.isEmpty)
+        XCTAssertTrue(store.selectedNotes.isEmpty)
+        store.selectNativeSection(at: leafPath)
+
+        let rawLeaf = try XCTUnwrap(leafPath.resolve(in: try XCTUnwrap(store.song.nativeSections)))
+        store.renameNativeSection(at: leafPath, name: "Renamed leaf")
+        let renamedLeaf = try XCTUnwrap(leafPath.resolve(in: try XCTUnwrap(store.song.nativeSections)))
+        XCTAssertEqual(renamedLeaf.name, "Renamed leaf")
+        XCTAssertEqual(renamedLeaf.rawLength, rawLeaf.rawLength)
+        XCTAssertEqual(renamedLeaf.children, rawLeaf.children)
+        XCTAssertEqual(store.song.sections.first(where: { $0.nativePath == leafPath })?.name, "Renamed leaf")
+        XCTAssertEqual(store.song.nativeSectionFidelity, .preserved)
+
+        store.mutate { $0.sections[0].start += 1 }
+        XCTAssertEqual(store.song.nativeSectionFidelity, .projectionOutOfSync)
+        store.renameNativeSection(at: leafPath, name: "Rename while stale")
+        XCTAssertEqual(store.song.nativeSectionFidelity, .projectionOutOfSync)
+        XCTAssertEqual(try leafPath.resolve(in: try XCTUnwrap(store.song.nativeSections)).name, "Rename while stale")
     }
 
     private func importFixture(_ json: [String: Any]) throws -> KlimperImportResult {
