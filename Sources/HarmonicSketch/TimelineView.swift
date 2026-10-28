@@ -130,13 +130,25 @@ private struct NativeSectionTreeRow: View {
     @State private var renameValue = ""
 
     var body: some View {
-        Group {
-            if node.children.isEmpty {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                if !node.children.isEmpty {
+                    Button { expanded.toggle() } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .frame(width: 12, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? "Collapse \(node.name)" : "Expand \(node.name)")
+                } else {
+                    Color.clear.frame(width: 12, height: 16)
+                }
                 rowLabel
-            } else {
-                DisclosureGroup(isExpanded: $expanded) {
-                    ForEach(node.children) { child in NativeSectionTreeRow(node: child) }
-                } label: { rowLabel }
+            }
+            if expanded {
+                ForEach(node.children) { child in
+                    NativeSectionTreeRow(node: child).padding(.leading, 14)
+                }
             }
         }
         .contextMenu { Button("Rename") { renameValue = node.name; showingRename = true } }
