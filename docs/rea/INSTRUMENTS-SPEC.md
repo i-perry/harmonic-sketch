@@ -104,6 +104,36 @@ string inventory for the settings is `ev_70fbfa1391fd39b11d412b3e6fae8ec14c9b787
 The `yes` / `16` values are constructor defaults in this path, not proof that
 the application exposes or preserves those settings.
 
+### Application-level SoundFont loading
+
+Beyond the generic source loader, `FUN_1000e709c` is a Klimper-level path that
+constructs a synth, derives a file path from a project-associated object and
+an input collection, and calls `FUN_1000f6bf4` with that path. It also builds
+the named `last_used_soundfont.sf2` path and branches on values obtained from
+the associated settings/map state. Its direct caller includes
+`FUN_1000e6fdc`; `FUN_1000e6d84` serializes access to the same object state
+before calling it. Function evidence:
+`ev_a931bcaf57a41990e5bc95db8bfcbc892f2ca315699aac13ab288bd70aa402c2` and
+`ev_cb358f7352bd1939c8154cec98c2ba9e4a09c9d0867ccbcbbcbb19bd593789ae`.
+This establishes an app-side configured-file-to-loader path separate from the
+embedded engine's bank/program resolver. The decompilation does not recover a
+source-level name for the collection or its keys, nor does it show that these
+file names originate in a Track's serialized `instrument` property.
+
+The `ProjectPlayer::noteOn` closure type and `Soundfonts::noteOn` both have
+the signature shape `(std::string, int, float, double)`. The former type
+identity is referenced by the helper at `FUN_1000e649c`
+(`ev_6b4ac5379e3355733dc7416d915cd2dff0e75d5c564f20634d8429a9d72dd99d`);
+the latter is present in the Soundfonts type inventory cited above. Matching
+signatures alone do not establish that the callback forwards to Soundfonts,
+or identify the string and integer arguments as instrument and channel. The
+parallel `music::instrument_of(Song const&, std::string&)` and
+`music::instruments_in_use(Song const&, std::set<std::string>&)` closure type
+strings (`ev_ce43d4f4b52c49a260fac1707f23a5832f82cb213ba735f78326e59f60e6c231`,
+`ev_441a6bbfb1352c10acb241abbc24d24cc77d7c455f3bf066cc3679d3ccca0503`)
+identify plausible song-wide lookup/collection operations, but static closure
+type data does not reveal their implementations or callers.
+
 ## Current evidence boundary
 
 The traces establish these endpoints:
@@ -117,6 +147,7 @@ InstrumentSelector and set_instrument_suggesting_trackname command
 
 Soundfonts noteOn(string, ...)
   -> map<string, unique_ptr<SoundfontAudioSource>>
+  -> app-configured `.sf2` path -> SoundFont loader
   -> loaded SoundFont preset/source lookup
   -> channel + bank/program candidate selection and fallback
 ```
@@ -127,9 +158,11 @@ or a combined catalog item; whether Track and ChordTrack resolve identically;
 how the project/player binds each Track to a channel; or whether the project
 string is passed directly to `Soundfonts::noteOn`. The app's visible output
 callback and the embedded engine's MIDI channel selection are also not yet
-joined by a complete static call/data-flow trace. The engine's candidate
-sequence is specified above, but there is no validated end-to-end vector from
-a project descriptor to a selected preset or an allocated MIDI channel.
+joined by a complete static call/data-flow trace. The app-side configured
+`.sf2` loader path is proven, but its key/path grammar and relation to the
+Track descriptor remain unknown. The engine's candidate sequence is
+specified above, but there is no validated end-to-end vector from a project
+descriptor to a selected preset or an allocated MIDI channel.
 
 ## Evidence needed to close the trace
 
@@ -139,11 +172,11 @@ a project descriptor to a selected preset or an allocated MIDI channel.
 2. Trace the runtime `ProjectPlayer`/output callback from a specific Track
    record to `Soundfonts::noteOn`, retaining the actual string argument and
    channel argument through the indirect call boundary.
-3. Connect the source string key to a loaded `.sf2` source and its enumerated
-   preset records; then connect the selected source/preset to each Track's
-   MIDI channel. The embedded resolver's fallback sequence is already
-   specified above, but the project-level input values and channel ownership
-   remain open.
+3. Recover the app-side configured source collection's key/path grammar and
+   connect it to the loaded `.sf2` source and enumerated preset records; then
+   connect the selected source/preset to each Track's MIDI channel. The
+   embedded resolver's fallback sequence is already specified above, but the
+   project-level input values and channel ownership remain open.
 
 Until those connections are proven, reconstruction should preserve the
 serialized instrument string and model track/output bindings as unresolved.

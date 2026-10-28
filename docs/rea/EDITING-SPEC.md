@@ -1,6 +1,6 @@
 # Selected-note transpose command
 
-This is a bounded static specification of the original Klimper 2.4 ARM64 selected-note transpose and time-move commands. It recovers the two-command undo transaction used by those handlers, but not the editor's full command set or the UI path that supplies all move deltas. No clone code or target app was run for this analysis.
+This is a bounded static specification of the original Klimper 2.4 ARM64 selected-note transpose/time-move commands and the generic `LengthEditing::drag_to` command path. It recovers their concrete undo inverses but not the editor's full command set, the item-kind mapping for length edits, or the UI path that supplies all move deltas. No clone code or target app was run for this analysis.
 
 ## Evidence baseline
 
@@ -62,6 +62,26 @@ Derived vectors (not runtime observations):
 
 Thus a mixed selection at starts `100` and `240` with `delta=-120` yields starts `100` and `120`: movement is not rejected as a whole, and the first note is not clamped to zero.
 
+## Length editing and command inverse
+
+The executable contains `LengthEditing::drag_to(MusicalTime)` closure RTTI (Evidence `ev_efec4ea489f7f1804fb634d6f785d2c695421a88c7bbdb0de13990458d6d9844`); its name is referenced from `0x1009c6b28` (Evidence `ev_38b38bc174c33271f6b12677b1aabad64c40a8ecd068dd882aef41f42ebf99c5`), beside a function-pointer table entry for `FUN_10005602c` at `0x1009c6b08` (data evidence `ev_526492768db81a34392b3b6d859f82679162260335837b13a18f52d48711f0d9`). That closure function constructs and dispatches `Command<Song>::Wrapper<change_item_length>`: it stores the command vtable at `0x1009c6c18`, whose type-name pointer references the wrapper RTTI string at `0x1003c6190` (Evidence `ev_d42f01f7f817cb28425877e12c8ab8bcab7eb6f6047581f4b726c67648f485c6`; wrapper name evidence `ev_1e2838b46a2299ca43dcd7454f7dfa71f7f44b90419b8fd4353f7a7c445d1b9c`). The closure body is `FUN_10005602c` (Evidence `ev_1a709de5647a6c6a261756670ad5853c7e10ee8c9aac8e495955e06b2c510eb6`), and the command vtable bytes are `ev_fe6254187c21c77d0168a5e27d389b167a83d68a5517454e8b7fdcf3012645ff`. A UI string says “Enable to move notes and edit note lengths” (Evidence `ev_b301c229aeadc91bac269ac8a6b7b0d04ea94e25dce949b860e9d32d17568473`), consistent with the handler's length-edit role though it is not a direct string-to-handler reference. Together this establishes the generic header length-drag to command path. It does not prove that every instance targets a selected MIDI note's right edge, nor name which note/chord/section variants reach it.
+
+The command methods map as follows: `+0x10` execute calls `FUN_100057010` (`FUN_100056ea4`, Evidence `ev_55e8425122a83b43450ea3be753a38c4f27f90733ee5e34b3dfc5a5c18e5389c`), `+0x18` undo calls `FUN_100056eac` (Evidence `ev_08b6754cf977b14a868e07d3b8430d84f4798b38a9d2bae5bd5d57657248108`), and `+0x20` redo calls `FUN_100057010` again (Evidence `ev_59b736a7af378067016eb282cfbdf36f6b32a7d1e9bf638a77d388050a3b9cbc`). The command-state copy constructor is `FUN_100056c04` (Evidence `ev_91ce4d2db44cc84b67b0f9468755db5cefde32b64672bd131d1b41c553b3a31f`). Execute records the old target length from item field `+0x20` into command state `+0x40` before changing it. Undo writes that saved value back to item field `+0x20`. This is an exact inverse for the length field; the wrapper participates in the same command-stack execute/undo/redo slot convention established above.
+
+The execute/redo transform reads integer `delta` from command state `+0x30`, calculates `candidateLength = currentLength + delta`, and applies it only when the candidate is at least `0x289` (649 ticks). The two storage variants use `FUN_10004b3a0` or `FUN_1000577a0` to resolve an item, then update its `+0x20` length; `FUN_1000571d8` selects the route and, in the indexed branch, checks a record tag and a global index bound. Evidence: helper bodies `ev_76e4a428d1ba59c0e12ee57ac214bbc6aadc4a8dde7f4d56a24dc80dc93e1e17`, `ev_565b734fbd278706ca071209be5172394906cb993e6f2d04c429b12eec42299b`, and `ev_b0ae8fea13a696ca99ca894166382436fea4a0cc45df8b29998b8bd0c2805556`; instructions with both strict-less-than guards and length writes `ev_925e3b2b662d276b958421f503a8616010caf4b29eaca29f0766bfe03227866d`. The threshold is strict: 648 is rejected, 649 is allowed. The helper applies the integer delta directly; no snapping or rounding occurs in this command path. The pixel-to-`MusicalTime` conversion upstream of the closure remains unexamined. The direct length-update transform has no upper-bound check; `FUN_1000579a8` runs additional content updates after an accepted change, and its maximum/end-boundary policy is not established here (Evidence `ev_54eb8a8b2d29a7bebb678863e39f1a941ed73acaf29ff6189aa0832f39966161`).
+
+The resolver calls have useful but incomplete semantic anchors: the named `section_content_length` accessor is implemented by `FUN_1000bd1ec` and calls `FUN_10004b3a0` (Evidence `ev_a8315003138ff25595208edee9f4a272b22d03cc68457f88c2b3685ee625fa58`; name-to-data reference `ev_01351c697ad7d744374745f0fda8c7bbb4b495289aaa582b568f74cab7be005c`), while the named `chord_entry_length` accessor `FUN_10008d228` calls `FUN_1000577a0` (Evidence `ev_83181eec43537d71d6102de52e765ab84768b2964a8d2e1cba1dd28d09978853`; name-to-data reference `ev_7f50d81b7dc4957dbdc903e053a96b5efaf9e0fd1a961608e8b28db854137e1f`). The length command reuses the same resolver pair, so section-content and chord-entry length families are represented. However, no evidence maps the command's discriminator values to every concrete item kind, particularly standalone MIDI notes versus a section as a whole; the route comparison is not enough to claim complete note/chord/section coverage.
+
+Derived threshold vectors (not runtime observations):
+
+| Current length | Delta | Candidate | Result |
+|---:|---:|---:|---|
+| 648 | +1 | 649 | accepted |
+| 700 | -51 | 649 | accepted |
+| 700 | -52 | 648 | rejected; retained length is 700 |
+
+The internal two-route dispatch is evident, but its variant discriminator values are not mapped by authenticated type evidence to “note”, “chord”, or “section”. This distinction and the exact selected-note UI association remain open questions.
+
 ## Derived vectors
 
 These are test vectors derived from the recovered arithmetic, not observations from running Klimper.
@@ -81,8 +101,8 @@ For a mixed selection containing pitches `60` and `127`, a `+1` command produces
 
 - Whether selection and viewport state are also restored on undo/redo.
 - Whether repeated transposition is coalesced or creates one command per invocation.
-- Other editing commands: resize, delete, duplicate, snap, and clipboard behavior.
+- Other editing commands: delete, duplicate, snap, and clipboard behavior. The generic `LengthEditing::drag_to` path above is recovered, but its selected-note-specific association and item-kind mapping are not.
 - The drag/keyboard caller path that computes every move delta; only the integer delta handler and one 1296-tick callsite are established here.
-- A separate RTTI type `music::change_item_length` and `LengthEditing::drag_to(MusicalTime)` lambda exist, but the evidence gathered so far does not tie that command to selected-note right-edge resizing. Its note-vs-section target, length rounding, minimum/maximum policy, and clip-bound behavior remain unresolved.
+- The drag closure's item-kind mapping (note/chord/section), pixel-to-`MusicalTime` snap behavior, and any maximum/clip-end constraint are not established.
 - UI selection gestures, keyboard shortcuts, and any behavior for an empty or stale selection beyond the handler's early return.
 - Runtime verification against the original app; activation is blocked, so these conclusions are static analysis only.
