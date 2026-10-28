@@ -114,4 +114,51 @@ final class MusicTheoryTests: XCTestCase {
         XCTAssertNotEqual(cMajor, octaveAltered)
         XCTAssertEqual(MusicTheory.contrastScore(first: cMajor, second: octaveAltered), 0, accuracy: 1e-6)
     }
+
+    func testRecoveredChordVectorComparesRootPitchClassToSignedThreshold() {
+        let base = NativeChordVoicing.make(rootPitchClass: 0, orderedIntervals: [4, 7],
+                                           register: 4, rootPitchClassThreshold: 0,
+                                           strummingTicks: 0, velocitySetting: 0.8,
+                                           velocityScalar: 1)
+        let raised = NativeChordVoicing.make(rootPitchClass: 0, orderedIntervals: [4, 7],
+                                             register: 4, rootPitchClassThreshold: 1,
+                                             strummingTicks: 0, velocitySetting: 0.8,
+                                             velocityScalar: 1)
+        let boundary = NativeChordVoicing.make(rootPitchClass: 11, orderedIntervals: [4, 7],
+                                               register: 4, rootPitchClassThreshold: 1,
+                                               strummingTicks: 0, velocitySetting: 0.8,
+                                               velocityScalar: 1)
+        let negativeThreshold = NativeChordVoicing.make(rootPitchClass: 0, orderedIntervals: [4, 7],
+                                                        register: 4, rootPitchClassThreshold: -1,
+                                                        strummingTicks: 0, velocitySetting: 0.8,
+                                                        velocityScalar: 1)
+
+        XCTAssertEqual(base.map(\.pitch), [48, 52, 55])
+        XCTAssertEqual(raised.map(\.pitch), [60, 64, 67])
+        XCTAssertEqual(boundary.map(\.pitch), [59, 63, 66])
+        XCTAssertEqual(negativeThreshold.map(\.pitch), [48, 52, 55])
+        XCTAssertEqual(base.map(\.velocity), [0.8, 0.8, 0.8])
+    }
+
+    func testRecoveredChordVectorUsesTickSpacingDurationFloorAndVelocityProduct() {
+        let notes = NativeChordVoicing.make(rootPitchClass: 0, orderedIntervals: [4, 7],
+                                            register: 4, rootPitchClassThreshold: 0,
+                                            strummingTicks: 5_184, velocitySetting: 0.8,
+                                            velocityScalar: 0.5)
+
+        XCTAssertEqual(notes.map(\.positionTicks), [0, 5_184, 10_368])
+        XCTAssertEqual(notes.map(\.lengthTicks), [10_368, 5_184, 162])
+        XCTAssertEqual(notes.map(\.velocity), [0.4, 0.4, 0.4])
+    }
+
+    func testRecoveredEffectiveVelocityGateLeavesNativeFlagMeaningsOpaque() {
+        XCTAssertEqual(NativeEffectiveVelocity.value(rawVelocity: 0.8, selectedLowFlag: 0,
+                                                     selectedHighFlag: 0, aggregateFlag: false), 0.8)
+        XCTAssertEqual(NativeEffectiveVelocity.value(rawVelocity: 0.8, selectedLowFlag: 1,
+                                                     selectedHighFlag: 1, aggregateFlag: false), 0)
+        XCTAssertEqual(NativeEffectiveVelocity.value(rawVelocity: 0.8, selectedLowFlag: 0,
+                                                     selectedHighFlag: 0, aggregateFlag: true), 0)
+        XCTAssertEqual(NativeEffectiveVelocity.value(rawVelocity: 0.8, selectedLowFlag: 0,
+                                                     selectedHighFlag: 1, aggregateFlag: true), 0.8)
+    }
 }

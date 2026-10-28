@@ -8,10 +8,20 @@ Requires macOS 13+ and Xcode command-line tools.
 
 ```sh
 bash scripts/build-app.sh
-open "dist/Harmonic Sketch.app"
+open "dist/Harmonic Sketch Oct 27 2026.app"
 ```
 
-Use `swift test --disable-sandbox` for tests. Package caches may need writable overrides in restricted environments; the build script sets these automatically.
+Run tests with writable compiler caches in restricted environments:
+
+```sh
+CLANG_MODULE_CACHE_PATH=/private/tmp/klimper-clang-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/private/tmp/klimper-swift-cache \
+swift test --disable-sandbox
+```
+
+The app build script sets equivalent cache overrides automatically.
+
+The script always builds the QA app at `dist/Harmonic Sketch Oct 27 2026.app` with bundle identifier `dev.harmonicsketch.composer.oct272026`. Close that app before rebuilding it. Keep this as the single app identity used for QA; archived bundle copies are for storage and must not be launched. Restore an archived build to the canonical QA path before testing it. The build is ad hoc signed, so a stable path and bundle identifier do not guarantee that macOS will preserve an “Always Allow” approval across rebuilds. Do not change OS approval settings or databases as part of this workflow.
 
 ## Compose
 
