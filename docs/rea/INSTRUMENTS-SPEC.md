@@ -134,6 +134,31 @@ strings (`ev_ce43d4f4b52c49a260fac1707f23a5832f82cb213ba735f78326e59f60e6c231`,
 identify plausible song-wide lookup/collection operations, but static closure
 type data does not reveal their implementations or callers.
 
+### Soundfonts note-on dispatch
+
+The implementation associated with `Soundfonts::noteOn(std::string, int,
+float, double)` dispatches the supplied values through the source map at
+`this + 0x1d0`. `FUN_1000ea2d0` constructs the map callback and runs it under
+the object's shared-mutex path; its callback body is `FUN_1000ea784`, whose
+RTTI names it as a lambda inside `Soundfonts::noteOn`
+(`0x1003bb027`; string-search evidence `ev_1b9358c1fc7e1be7226de4cf84168b8bd8ffa1aabd31b231b64aa020fdb34bf3`).
+The function bodies are `ev_42eaac4c4a687461b9636a03c4fa818bcad822ad2784fc3ae1e8915f281256e9`
+and `ev_7c602dfbb6076e17f94028ae34ba9ec8c03b74dceabe316cec909cc378e9fee9`.
+The callback looks up its captured string as an exact map key; a missing key
+reaches the `map::at: key not found` failure path. For a found source, it
+builds a three-byte MIDI note-on event with status `0x90` (MIDI channel 0),
+pitch `inputPitch & 0x7f`, and velocity derived from the float input times 127,
+bounded to 0–127. It passes the supplied double alongside that packet to
+`FUN_1000f677c`, which copies the event and invokes the source's synchronized
+output handler. Evidence for packet construction and forwarding is the
+callback body above and `FUN_1000f677c`
+(`ev_e86d751e33be46344c2ff0ed1eb7c0933af4094e34635d69b18b3a08740f854e`).
+
+This closes the key-to-loaded-source lookup inside `Soundfonts::noteOn` and
+shows channel 0 in that event construction. It does not establish that
+`ProjectPlayer` invokes this method, that a Track's persisted `instrument`
+field is the key supplied here, or how Tracks are assigned channels upstream.
+
 ## Current evidence boundary
 
 The traces establish these endpoints:
@@ -148,8 +173,8 @@ InstrumentSelector and set_instrument_suggesting_trackname command
 Soundfonts noteOn(string, ...)
   -> map<string, unique_ptr<SoundfontAudioSource>>
   -> app-configured `.sf2` path -> SoundFont loader
-  -> loaded SoundFont preset/source lookup
-  -> channel + bank/program candidate selection and fallback
+  -> exact source-key lookup -> MIDI note packet (channel 0)
+  -> loaded SoundFont preset/source lookup and channel/bank/program fallback
 ```
 
 They do **not** prove the arrows between those endpoints: which exact string
@@ -173,10 +198,11 @@ descriptor to a selected preset or an allocated MIDI channel.
    record to `Soundfonts::noteOn`, retaining the actual string argument and
    channel argument through the indirect call boundary.
 3. Recover the app-side configured source collection's key/path grammar and
-   connect it to the loaded `.sf2` source and enumerated preset records; then
-   connect the selected source/preset to each Track's MIDI channel. The
-   embedded resolver's fallback sequence is already specified above, but the
-   project-level input values and channel ownership remain open.
+   connect it to the loaded `.sf2` source and enumerated preset records. Then
+   trace the ProjectPlayer callback into `Soundfonts::noteOn`, and connect the
+   Track's persisted field and any per-track channel assignment to those
+   arguments. The embedded resolver's fallback sequence and Soundfonts-side
+   channel-0 packet are specified above; project-level routing remains open.
 
 Until those connections are proven, reconstruction should preserve the
 serialized instrument string and model track/output bindings as unresolved.
