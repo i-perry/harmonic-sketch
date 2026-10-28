@@ -2,7 +2,7 @@
 
 Target: `research/Klimper-arm64`, SHA-256 `3f26469013c1d3ac1cde475d851641da312c3100aa5ad452fdb6ebc737476d41`; Ghidra 12.1.4 profile `966e6016724421ad282356f583a9d5bf24577db4ac77a75c7099d236b8bcc28`. Static shipped-artifact analysis only. No original-app activation or runtime behavior is claimed.
 
-Focused evidence export: `research/rea-palette-enumeration-2026-10-28.json` (369 records, 58,032,566 bytes).
+Focused evidence exports are kept locally as raw research artifacts: `research/rea-palette-enumeration-2026-10-28.json` (initial 369-record bundle), `research/rea-palette-owner-view-2026-10-28.json` (405-record owner-view bundle), and `research/rea-palette-enumeration-2026-10-28-v3.json` (latest 426-record bundle, 67,494,515 bytes). They are excluded from the curated documentation commit.
 
 ## Recovered module boundaries and data flow
 
@@ -27,7 +27,26 @@ The `_item_creation` closure's generated type test is `FUN_1000d8058`. Its incom
 
 A separate per-item update path is visible in `FUN_1000d8b48` (`ev_718b2c1dab9d9b4e6a9ffba9e5d7fcc5d9244950e0f057d95a7aca957eac35a2`). It compares an existing relation-score tree with a newly built tree, reconciles entries by integer key, and then invokes stored callbacks. Its helpers include `FUN_1000d80b8` (comparison), `FUN_1000d8250` (builds two keyed entries), and `FUN_1000d856c` (tree merge). This is evidence for item relation-state refresh and ordering within that state; it is not evidence for palette candidate enumeration or candidate display order. The actual relation scorer dispatch and score-to-color mapping remain unresolved, as detailed in [HARMONY.md](HARMONY.md).
 
-Current candidate-source boundary: the item consumes one `chords::Entry`, whose root and ordered intervals are preserved by the adapter. The settings identify project scale, chosen borrowing key, parallel mode, and adjacent fifth scales as candidate-source inputs. No static evidence found in this pass specifies the interval-quality catalog, candidate enumeration order, duplicate handling, candidate exclusion/filter predicates, or how those controls transform the candidate range. Do not treat the two-entry relation map in `FUN_1000d8250` as the palette catalog.
+### Base candidate generation recovered
+
+The owner-view updater is `FUN_1000cb730`; it copies the active scale record (root plus its ordered interval vector) into a local value and calls `FUN_1000ce1fc` with that value. After the call it consumes a vector of fixed-size `0x80`-byte per-root records. This joins the `ChordPaletteContent` view update to the candidate producer, rather than merely locating the item callback (`ev_2ea82f71e5b6ada994fa363e23ba1a772011a17bf66ec3be986e1f4db5ad78d5`, `ev_ef19c1af18bf3937ac156e96a4de2c34542aace55d60fc44d71314cb34bf2ff2`).
+
+`FUN_1000622d8` expands the input scale record into pitch classes by emitting its root and then adding each stored interval in order, reducing each result modulo 12. `FUN_10006253c` builds a membership set from that vector. `FUN_1000ce1fc` iterates the expanded scale pitch classes in that original sequence; for each pitch class it tests these four interval vectors in this exact order:
+
+| Candidate interval vector | Conventional quality interpretation |
+|---|---|
+| `[4,7]` | major triad |
+| `[3,7]` | minor triad |
+| `[3,6]` | diminished triad |
+| `[4,8]` | augmented triad |
+
+The vectors are initialized as such in `FUN_10037a208` and referenced directly by the candidate producer. The quality names are conventional interpretations of the observed semitone vectors, not strings recovered from the binary (`ev_78355479c6344a10a23f2ca728737bf780a0e756f39a4e2c3a34a7adc84e5ccf`). For each root/template pair, `FUN_100006784` builds a sorted unique pitch-class set from the root and root-plus-intervals (modulo 12). The producer walks that set against the scale membership set. If a candidate pitch class is lower than the current scale-set pitch class, that candidate is rejected; if the candidate set is exhausted, all candidate pitch classes were found and the entry is accepted. Thus base candidates are diatonic triad templates whose tones are subsets of the supplied scale. The original interval vector is retained in the entry; the set is only used for membership, so it does not replace or reorder the entry's interval sequence (`ev_9e94b4b9214e99b34021525f47ba0644b2b9473a17b7223fa47360efdcc6441f`, `ev_ef19c1af18bf3937ac156e96a4de2c34542aace55d60fc44d71314cb34bf2`).
+
+Observed base enumeration order is therefore: input-scale pitch-class order, then `[4,7]`, `[3,7]`, `[3,6]`, `[4,8]`. The result is grouped into per-root records, with separate vectors for the candidate families; it is not one globally sorted flat list at this stage. The scale expansion can preserve repeated pitch classes from repeated input intervals, while the membership sets deduplicate their keys. Whether the complete view later suppresses duplicate entries or exposes any repeated-root artifacts is not established.
+
+The follow-on `FUN_1000d3b04` pass initializes nine additional interval vectors (`[9]`, `[10]`, `[11]`, `[14]`, `[14,9]`, `[10,14]`, `[11,14]`, `[10,14,17]`, `[11,14,17]`) and processes the per-root groups; the binary also initializes four-element vectors `[10,14,17,21]` and `[11,14,17,21]`. These are observed auxiliary interval catalogs, but the exact rule that attaches them to base entries and the final display flattening/order require further tracing. Do not present them as verified palette labels or as a completed list of displayed chord types (`ev_784eda12be05f3db0bfebe8c4a0271b6f5b0a4f25e3d560cbdaa0798eb8a76a0`, `ev_78355479c6344a10a23f2ca728737bf780a0e756f39a4e2c3a34a7adc84e5ccf`).
+
+The settings identify project scale, chosen borrowing key, parallel mode, and adjacent fifth scales as candidate-source controls. The verified producer accepts a single already-formed scale record; this trace does not yet identify the transformations that select or combine those controls into that record. Do not treat the two-entry relation map in `FUN_1000d8250` as the palette catalog.
 
 ## State binding established by constructor stores
 
@@ -51,8 +70,8 @@ The generator emits the root first and then each stored interval pitch; the spac
 
 ## Proven unknowns and next trace frontier
 
-Candidate enumeration, candidate filtering, quality order, score-based exclusion, stable display order/tie behavior, palette score-to-color conversion, and the gesture-to-item-action dispatch are unknown. The creator's direct code callers are absent; Ghidra references identify its closure/vtable data but not the dynamic callsite. `ChordPaletteContent::_item_creation` therefore proves a consumer signature, not the upstream candidate list.
+The base candidate templates, filter, and enumeration order are now recovered. Final display flattening/order, whether duplicate entries from repeated scale pitch classes are removed, the auxiliary extension-template attachment rule, score-based exclusion, palette score-to-color conversion, and gesture-to-item-action dispatch remain unknown. The creator's direct code callers remain absent; the owner updater reaches the candidate producer and later consumes its grouped records, while the dynamic generic `ForEach` invocation itself is still not identified.
 
-The next precise frontier is the candidate-range expression observed at the `ChordPaletteContent` view/body layer: resolve the generic closure invocation that consumes the captured `_item_creation` function and identify the collection expression yielding each `chords::Entry`. Trace its dependencies back to the project scale, chosen borrow key, parallel mode, and left/right adjacent-scale controls. If that generic callsite remains unavailable, the concrete next bounded probe is to identify the code/data object at the `_item_creation` closure's vtable (`0x1009c2088` and its adjacent slots), then follow the owning view's closure construction and range argument. Keep the unresolved outputs explicit: no interval catalog, entry generation loop, quality order, duplicate rule, scale/key filter, or candidate-level score cutoff has been recovered.
+The next precise frontier is the `FUN_1000d3b04`/post-producer grouped-record transformation: identify how the nine auxiliary interval vectors map to base candidate groups and then how the resulting grouped entries are flattened for the generic collection view. In parallel, trace the settings choice values to the scale record passed into `FUN_1000cb730`; do not reopen the already-established settings alias chain. Keep unresolved outputs explicit: final display order, duplicate behavior, borrow/parallel/adjacent-scale composition, candidate-level score cutoff, and label mappings have not been recovered.
 
 Other explicit unknowns remain: root-threshold default/mutation, producer gain setter/default, and the source meaning/default of the persisted `preview` settings object. Static analysis does not prove absence of other indirect callers or establish runtime behavior. Original activation remains blocked; no bypass was attempted.
