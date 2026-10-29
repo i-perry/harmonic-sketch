@@ -152,7 +152,8 @@ When the flag is zero, it copies the string from the Song argument at `+0x10`
 directly. This establishes the lookup operation's Track-string
 behavior, but not yet where the closure is created or which scheduler event
 uses it. The unique 40-record REA export is
-[`rea-instrument-track-lookup-luna-2026-10-28.json`](../../research/rea-instrument-track-lookup-luna-2026-10-28.json).
+[`rea-instrument-track-lookup-luna-2026-10-28.json`](../../research/rea-instrument-track-lookup-luna-2026-10-28.json). The current 80-record follow-up is
+[`rea-instrument-producer-join-luna-2026-10-29.json`](../../research/rea-instrument-producer-join-luna-2026-10-29.json); it includes closure-copy and ChordPreview constructor traces, but does not identify the scheduler event producer.
 
 ### Soundfonts note-on dispatch
 
@@ -209,7 +210,18 @@ The constructor evidence above identifies that active field as ProjectPlayer's
 replaceable note-on callback. This closes the consumer-side event-string to
 callback edge. The producer of the scheduler's `0x40`-byte event vector has
 not been recovered, so there is no proof yet that it invokes `instrument_of`
-to populate event string `+0x20`.
+to populate event string `+0x20`. The `instrument_of` closure is 0x18 bytes: its
+callable table is followed by an identifier qword at `+0x8` and a flag at
+`+0x10`; its clone and inline-copy helpers preserve both captured words
+(`ev_afdac7cc58745e0abbc1b4f5795967761a31035d2f9dd8a4580344bceac12f6e`,
+`ev_490cce365a3400b12502f5b3cd535159740bfe6eb7608252e5a41392006cab9e`,
+`ev_2eea2600758741f3f5f9afef4ffe5ced82ea9b02b42f78b2b3e218a729953312`,
+`ev_86518c89d75df9130482a0bc1c03a1ad670a5524497558aa42846c507b243514`).
+The ChordPreview constructor `FUN_1000da3dc` copies/queries this callable during
+its setup (`ev_14785251120af5e72ad6de1eb13d1785e9e15aa0705568405089801569066b80`);
+that is evidence of one consumer, not evidence that it creates scheduler
+events. The capture flag creator and its meaning for Track versus ChordTrack
+remain unresolved.
 
 The remaining gaps are: which exact string the selector returns; whether it
 identifies a SoundFont file, a named preset, or a combined catalog item;
