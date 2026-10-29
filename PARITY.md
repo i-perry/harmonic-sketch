@@ -7,12 +7,12 @@ Reference: installed Klimper 2.4, universal macOS executable. Official [chord ma
 | Chord palette | Seven degree columns, 19 qualities, key/mode borrowing, filled/hollow membership, major/minor/other colors. Layout/order is approximate. |
 | Scales | Seven diatonic modes plus harmonic minor. |
 | Symbols | Pitch names and Roman degree notation. Enharmonic spelling simplified. |
-| Relations | Tonal/Flow/Contrast use original fifth-motion/shared-tone heuristics. Exact reference ranking is unknown. |
-| Note matching | Selected pitches filter chord candidates. No proprietary scoring reproduced. |
+| Relations | Flow, Contrast, and both Tonal branches use recovered callback formulas with derived-vector tests. Palette argument mapping and exact score-to-visual mapping are reconstruction choices because the indirect caller is unresolved. |
+| Note matching | Match Notes uses the recovered score for palette outline strength and retains exact-match dimming. The source callback's palette use, empty-selection behavior, and score-to-visual mapping remain unverified. |
 | Arrangement | Append/drop/move/duplicate/delete/resize chords; direct voicing and inversion edits. |
 | Sections | Named flat ranges, content-aware move/resize/Option-duplicate, loop range context action. Recursive subsections are flattened; editing remains flat. |
 | Piano roll | Create/delete/move/duplicate notes, both-end length edits, velocity, marquee/Shift selection, ghost notes and harmony guides. |
-| Tracks | Up to 14 melody tracks plus chord track, add/remove/rename, mute/solo/volume, eight GM preset choices. Explicit channel capacity keeps live and exported MIDI consistent. |
+| Tracks | Up to 14 melody tracks plus chord track, melody add/remove/rename, independent chord and melody mute/solo/volume/pan/instrument controls. Explicit channel capacity keeps live and exported MIDI consistent. Only unmuted solo channels suppress other channels. |
 | Editing | Snapshot undo/redo, internal note/chord/section clipboard, transpose, horizontal/vertical zoom, snap including triplets. Cross-app note clipboard is not implemented. |
 | Playback | Tempo, play/pause/rewind, loop bounds, system sampler, SF2/DLS loading. Not a hard realtime DAW engine. |
 | Files | Validated versioned independent JSON format; best-effort `.klp` importer based on static schema evidence, with explicit fidelity warnings. Not lossless `.klp` round-trip compatibility. Dirty document prompts and remembered Save URL. |

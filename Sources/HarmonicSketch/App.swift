@@ -94,7 +94,7 @@ struct TransportView: View {
             Picker("Mode", selection: Binding(get: { store.song.mode }, set: { value in store.mutate { $0.mode = value } })) { ForEach(ScaleMode.allCases, id: \.self) { Text($0.label).tag($0) } }.frame(width: 170)
             Picker("Snap", selection: $store.snap) { Text("Off").tag(0.0); Text("1/4").tag(1.0); Text("1/8").tag(0.5); Text("1/16").tag(0.25); Text("1/32").tag(0.125); Text("Triplet").tag(1.0/3) }.frame(width: 110)
             Spacer()
-            Text(String(format: "%03.1f", store.playhead)).monospacedDigit().foregroundStyle(.mint)
+            PlaybackPositionReadout(position: store.position)
             Button("MIDI…", action: store.exportMIDI)
             Text("Drag MIDI").padding(5).background(Color.mint.opacity(0.2)).cornerRadius(4).onDrag { store.midiDragProvider() }.help("Drag selected notes or chord; otherwise the selected track")
         }.controlSize(.small)

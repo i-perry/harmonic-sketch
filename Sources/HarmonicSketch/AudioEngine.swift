@@ -4,6 +4,7 @@ import Foundation
 struct PlaybackClock {
     private(set) var beat: Double
     private var lastTime: TimeInterval
+    private var fractionalMilliseconds = 0.0
 
     init(beat: Double, time: TimeInterval) {
         self.beat = beat
@@ -11,10 +12,17 @@ struct PlaybackClock {
     }
 
     mutating func advance(to time: TimeInterval, tempo: Double) -> Double {
-        let elapsed = max(0, time - lastTime)
+        let elapsedMilliseconds = max(0, time - lastTime) * 1_000
         lastTime = time
         guard tempo.isFinite, tempo > 0 else { return beat }
-        beat += elapsed * tempo / 60
+        let ticksPerMillisecond = (tempo / 60_000) * 0.25 * 10_368
+        let rawTicks = (ticksPerMillisecond * elapsedMilliseconds).rounded(.towardZero)
+        let rawTickMilliseconds = ((rawTicks / 10_368) * 4 * 60_000) / tempo
+        let carriedMilliseconds = fractionalMilliseconds + (elapsedMilliseconds - rawTickMilliseconds)
+        let carriedTicks = (ticksPerMillisecond * carriedMilliseconds).rounded(.towardZero)
+        let carriedTickMilliseconds = ((carriedTicks / 10_368) * 4 * 60_000) / tempo
+        fractionalMilliseconds = carriedMilliseconds - carriedTickMilliseconds
+        beat += (rawTicks + carriedTicks) / 2_592
         return beat
     }
 }
@@ -31,6 +39,61 @@ enum PlaybackTimeline {
     }
 }
 
+struct ChordPreviewEvent {
+    let pitch: Int
+    let startTicks: Int
+    let durationTicks: Int
+    let velocity: Int
+}
+
+enum ChordPreviewTimeline {
+    static let ticksPerBeat = 2_592
+    static let baseDurationTicks = 10_368
+    static let minimumDurationTicks = 162
+
+    static func events(pitches: [Int], tempo: Double, spacingSeconds: Double,
+                       gain: Double) -> [ChordPreviewEvent] {
+        guard tempo.isFinite, tempo > 0 else { return [] }
+        let safeSpacing = spacingSeconds.isFinite ? max(0, spacingSeconds) : 0
+        let ticksPerSecond = tempo / 60 * Double(ticksPerBeat)
+        let velocity = Int((127 * (gain.isFinite ? max(0, gain) : 0)).rounded())
+        return pitches.enumerated().map { index, pitch in
+            let offset = Int((safeSpacing * Double(index) * ticksPerSecond).rounded(.towardZero))
+            return ChordPreviewEvent(pitch: pitch, startTicks: offset,
+                                     durationTicks: max(baseDurationTicks - offset, minimumDurationTicks),
+                                     velocity: min(127, velocity))
+        }
+    }
+}
+
+struct PlaybackDisplayThrottle {
+    let minimumInterval: TimeInterval
+    private(set) var lastPublishedAt: TimeInterval?
+
+    init(minimumInterval: TimeInterval = 1.0 / 30.0) {
+        self.minimumInterval = max(0, minimumInterval)
+    }
+
+    mutating func shouldPublish(at time: TimeInterval, force: Bool = false) -> Bool {
+        guard time.isFinite else { return false }
+        if force {
+            lastPublishedAt = time
+            return true
+        }
+        guard let lastPublishedAt else {
+            self.lastPublishedAt = time
+            return true
+        }
+        guard time - lastPublishedAt >= minimumInterval else { return false }
+        self.lastPublishedAt = time
+        return true
+    }
+
+    mutating func reset() {
+        lastPublishedAt = nil
+    }
+}
+
 @MainActor final class PlaybackEngine {
     private static let chordSamplerIndex = 0
     private static let firstTrackSamplerIndex = 1
@@ -40,6 +103,7 @@ enum PlaybackTimeline {
     private var loadedPrograms: [Int: Int] = [:]
     private var timer: Timer?
     private var playbackClock: PlaybackClock?
+    private var displayThrottle = PlaybackDisplayThrottle()
     private var previousBeat = 0.0
     private var isFirstPlaybackTick = true
     private var loopCycle: Int?
@@ -50,6 +114,7 @@ enum PlaybackTimeline {
     private var active: [ActiveVoice] = []
     private var midiPrograms: [Int: Int] = [:]
     private var midiVolumes: [Int: Double] = [:]
+    private var midiPans: [Int: Double] = [:]
     private var previewWorkItems: [DispatchWorkItem] = []
     private var activePreviewMIDIPitches = Set<Int>()
     private(set) var soundFont: URL?
@@ -78,22 +143,20 @@ enum PlaybackTimeline {
         midi.onDestinationChanged = { [weak self] in
             self?.midiPrograms.removeAll()
             self?.midiVolumes.removeAll()
+            self?.midiPans.removeAll()
         }
         midi.onError = { [weak self] message in self?.onError?(message) }
     }
 
     func prepare(_ song: Song) throws {
         if !engine.isRunning { try engine.start() }
-        try ensureProgramLoaded(0, program: 0)
-        try ensureProgramLoaded(Self.previewSamplerIndex, program: 0)
-        if midiPrograms[0] != 0 {
-            midi.programChange(program: 0, channel: 0)
-            midiPrograms[0] = 0
-        }
-        if midiVolumes[0] == nil {
-            midi.setVolume(0.8, channel: 0)
-            midiVolumes[0] = 0.8
-        }
+        try ensureProgramLoaded(0, program: song.chordChannel.instrument)
+        try ensureProgramLoaded(Self.previewSamplerIndex, program: song.chordChannel.instrument)
+        samplers[Self.chordSamplerIndex].volume = Float(song.chordChannel.volume)
+        samplers[Self.chordSamplerIndex].pan = Float(song.chordChannel.pan)
+        samplers[Self.previewSamplerIndex].volume = Float(song.chordChannel.volume)
+        samplers[Self.previewSamplerIndex].pan = Float(song.chordChannel.pan)
+        configureChordMIDI(song.chordChannel)
         for (index, track) in song.tracks.prefix(15).enumerated() {
             try ensureProgramLoaded(index + Self.firstTrackSamplerIndex, program: track.instrument)
         }
@@ -105,25 +168,30 @@ enum PlaybackTimeline {
         try prepare(song)
     }
 
-    func preview(_ pitches: [Int], velocity: Int = 90, strum: Double = 0) {
+    func preview(_ pitches: [Int], velocity: Int = 90, strum: Double = 0, tempo: Double = 120) {
         cancelPreview()
-        guard !pitches.isEmpty else { return }
-        let safeVelocity = UInt8(clamping: velocity)
-        for (index, pitch) in pitches.enumerated() {
-            let delay = max(0, Double(index) * strum)
+        let gain = Double(min(127, max(0, velocity))) / 127
+        let events = ChordPreviewTimeline.events(pitches: pitches, tempo: tempo,
+                                                 spacingSeconds: strum, gain: gain)
+        guard !events.isEmpty else { return }
+        for event in events {
+            let secondsPerTick = 4 * 60 / (tempo * Double(ChordPreviewTimeline.baseDurationTicks))
+            let delay = Double(event.startTicks) * secondsPerTick
+            let duration = Double(event.durationTicks) * secondsPerTick
+            let safeVelocity = UInt8(clamping: event.velocity)
             schedulePreview(after: delay) { engine in
                 engine.samplers[Self.previewSamplerIndex].startNote(
-                    UInt8(clamping: pitch), withVelocity: safeVelocity, onChannel: 0
+                    UInt8(clamping: event.pitch), withVelocity: safeVelocity, onChannel: 0
                 )
                 if engine.timer == nil {
-                    engine.activePreviewMIDIPitches.insert(pitch)
-                    engine.midi.noteOn(pitch: pitch, velocity: Int(safeVelocity), channel: 0)
+                    engine.activePreviewMIDIPitches.insert(event.pitch)
+                    engine.midi.noteOn(pitch: event.pitch, velocity: Int(safeVelocity), channel: 0)
                 }
             }
-            schedulePreview(after: delay + 0.7) { engine in
-                engine.samplers[Self.previewSamplerIndex].stopNote(UInt8(clamping: pitch), onChannel: 0)
-                if engine.activePreviewMIDIPitches.remove(pitch) != nil {
-                    engine.midi.noteOff(pitch: pitch, channel: 0)
+            schedulePreview(after: delay + duration) { engine in
+                engine.samplers[Self.previewSamplerIndex].stopNote(UInt8(clamping: event.pitch), onChannel: 0)
+                if engine.activePreviewMIDIPitches.remove(event.pitch) != nil {
+                    engine.midi.noteOff(pitch: event.pitch, channel: 0)
                 }
             }
         }
@@ -137,6 +205,7 @@ enum PlaybackTimeline {
         let startBeat = max(0, beat.isFinite ? beat : 0)
         let now = Date.timeIntervalSinceReferenceDate
         playbackClock = PlaybackClock(beat: startBeat, time: now)
+        displayThrottle.reset()
         previousBeat = startBeat
         isFirstPlaybackTick = true
         loopCycle = nil
@@ -178,7 +247,6 @@ enum PlaybackTimeline {
         }
         let absoluteBeat = clock.advance(to: now, tempo: song.tempo)
         playbackClock = clock
-        configureChordMIDI()
         let position: Double
         let currentCycle: Int?
         if looping, song.loopEnd > song.loopStart, absoluteBeat >= song.loopEnd {
@@ -202,7 +270,8 @@ enum PlaybackTimeline {
             loopCycle = nil
         }
 
-        let audibleTracks = audibleTracks(in: song)
+        let audibleTracks = MixingPolicy.audibleTracks(in: song)
+        let chordIsAudible = MixingPolicy.includesChordTrack(in: song)
         let layout = song.tracks.map(\.id)
         if layout != trackLayout {
             silence()
@@ -210,17 +279,32 @@ enum PlaybackTimeline {
             trackLayout = layout
             isFirstPlaybackTick = true
         }
-        stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set(audibleTracks.map(\.id)), song: song)
+        stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set(audibleTracks.map(\.id)),
+                                         chordIsAudible: chordIsAudible, song: song)
         stopExpiredVoices(at: position)
 
         do {
+            if loadedPrograms[Self.chordSamplerIndex] != song.chordChannel.instrument {
+                let chordVoices = active.filter { $0.chordID != nil }
+                for voice in chordVoices { stop(voice); if let chordID = voice.chordID { startedChordIDs.remove(chordID) } }
+                active.removeAll { $0.chordID != nil }
+            }
+            try ensureProgramLoaded(Self.chordSamplerIndex, program: song.chordChannel.instrument)
+            samplers[Self.chordSamplerIndex].volume = Float(song.chordChannel.volume)
+            samplers[Self.chordSamplerIndex].pan = Float(song.chordChannel.pan)
+            configureChordMIDI(song.chordChannel)
             let channelByIndex = Dictionary(uniqueKeysWithValues: Self.melodicChannels.enumerated().map { ($0.offset, $0.element) })
             for (index, track) in song.tracks.prefix(15).enumerated() where audibleTracks.contains(where: { $0.id == track.id }) {
                 try ensureProgramLoaded(index + Self.firstTrackSamplerIndex, program: track.instrument)
                 samplers[index + Self.firstTrackSamplerIndex].volume = Float(track.volume)
+                samplers[index + Self.firstTrackSamplerIndex].pan = Float(track.pan ?? 0)
                 if let channel = channelByIndex[index] {
                     if midiPrograms[channel] != track.instrument {
-                        for voice in active where voice.trackID == track.id { stop(voice) }
+                        let trackVoices = active.filter { $0.trackID == track.id }
+                        for voice in trackVoices {
+                            stop(voice)
+                            if let noteID = voice.noteID { startedNoteIDs.remove(noteID) }
+                        }
                         active.removeAll { $0.trackID == track.id }
                         midi.programChange(program: track.instrument, channel: channel)
                         midiPrograms[channel] = track.instrument
@@ -228,6 +312,11 @@ enum PlaybackTimeline {
                     if midiVolumes[channel] != track.volume {
                         midi.setVolume(track.volume, channel: channel)
                         midiVolumes[channel] = track.volume
+                    }
+                    let pan = track.pan ?? 0
+                    if midiPans[channel] != pan {
+                        midi.setPan(pan, channel: channel)
+                        midiPans[channel] = pan
                     }
                 }
                 for note in track.notes where !startedNoteIDs.contains(note.id) {
@@ -241,7 +330,7 @@ enum PlaybackTimeline {
                     }
                 }
             }
-            for chord in song.chords where !startedChordIDs.contains(chord.id) {
+            for chord in song.chords where chordIsAudible && !startedChordIDs.contains(chord.id) {
                 let crossed = chord.start > previousBeat && chord.start <= position && chord.start + chord.duration > position
                 let sustainingAtPosition = chord.start <= position && chord.start + chord.duration > position
                 if crossed || sustainingAtPosition {
@@ -253,38 +342,39 @@ enum PlaybackTimeline {
                 }
             }
         } catch {
+            stop()
             onError?(error.localizedDescription)
+            onStopped?()
+            return
         }
 
         previousBeat = position
         isFirstPlaybackTick = false
-        onBeat?(position)
+        if displayThrottle.shouldPublish(at: now) { onBeat?(position) }
         if !looping, position >= PlaybackTimeline.contentEnd(of: song) {
             let endBeat = PlaybackTimeline.contentEnd(of: song)
             stop()
-            onBeat?(endBeat)
+            if displayThrottle.shouldPublish(at: now, force: true) { onBeat?(endBeat) }
             onStopped?()
         }
     }
 
-    private func audibleTracks(in song: Song) -> [Track] {
-        let unmuted = song.tracks.filter { !$0.mute }
-        let hasSolo = unmuted.contains(where: \.solo)
-        return unmuted.filter { !hasSolo || $0.solo }
-    }
-
-    private func configureChordMIDI() {
-        if midiPrograms[0] != 0 {
-            midi.programChange(program: 0, channel: 0)
-            midiPrograms[0] = 0
+    private func configureChordMIDI(_ settings: ChannelSettings) {
+        if midiPrograms[0] != settings.instrument {
+            midi.programChange(program: settings.instrument, channel: 0)
+            midiPrograms[0] = settings.instrument
         }
-        if midiVolumes[0] != 0.8 {
-            midi.setVolume(0.8, channel: 0)
-            midiVolumes[0] = 0.8
+        if midiVolumes[0] != settings.volume {
+            midi.setVolume(settings.volume, channel: 0)
+            midiVolumes[0] = settings.volume
+        }
+        if midiPans[0] != settings.pan {
+            midi.setPan(settings.pan, channel: 0)
+            midiPans[0] = settings.pan
         }
     }
 
-    private func stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set<UUID>, song: Song) {
+    private func stopVoicesThatAreNoLongerAudible(audibleTrackIDs: Set<UUID>, chordIsAudible: Bool, song: Song) {
         let availableNoteIDs = Set(song.tracks.flatMap(\.notes).map(\.id))
         for voice in active where voice.trackID.map({ !audibleTrackIDs.contains($0) }) == true
                 || voice.noteID.map({ !availableNoteIDs.contains($0) }) == true {
@@ -296,7 +386,7 @@ enum PlaybackTimeline {
         }
         let audibleNoteIDs = Set(song.tracks.filter { audibleTrackIDs.contains($0.id) }.flatMap(\.notes).map(\.id))
         startedNoteIDs.formIntersection(audibleNoteIDs)
-        let availableChordIDs = Set(song.chords.map(\.id))
+        let availableChordIDs = chordIsAudible ? Set(song.chords.map(\.id)) : []
         for voice in active where voice.chordID.map({ !availableChordIDs.contains($0) }) == true { stop(voice) }
         active.removeAll { $0.chordID.map { !availableChordIDs.contains($0) } == true }
         startedChordIDs.formIntersection(availableChordIDs)

@@ -2,15 +2,23 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+@MainActor final class PlaybackPosition: ObservableObject {
+    @Published var beat: Double = 0
+}
+
 @MainActor final class ComposerStore: ObservableObject {
     @Published var song = Song()
     @Published var selectedTrack = 0
     @Published var selectedChord: UUID?
     @Published var selectedChords: Set<UUID> = []
     @Published var selectedSections: Set<UUID> = []
+    @Published var selectedNativeSectionPath: KlimperSectionPath?
     @Published var cursorBeat: Double = 0
     @Published var selectedNotes: Set<UUID> = []
-    @Published var playhead: Double = 0
+    var playhead: Double {
+        get { position.beat }
+        set { position.beat = newValue }
+    }
     @Published var playing = false
     @Published var looping = true
     @Published var snap: Double = 0.5
@@ -27,7 +35,16 @@ import UniformTypeIdentifiers
     @Published var previewVelocity = 90
     @Published private(set) var revision = 0
     @Published private(set) var documentURL: URL?
-    let audio = PlaybackEngine()
+    let position = PlaybackPosition()
+    lazy var audio: PlaybackEngine = {
+        let engine = PlaybackEngine()
+        engine.onBeat = { [weak self] beat in self?.position.beat = beat }
+        engine.onError = { [weak self] message in self?.error = message; self?.playing = false }
+        engine.onStopped = { [weak self] in self?.playing = false }
+        engine.midi.onError = { [weak self] message in self?.error = message }
+        if let midiError = engine.midi.lastError { error = midiError }
+        return engine
+    }()
     private var undoStack: [Song] = []
     private var redoStack: [Song] = []
     private var clipboard: [Note] = []
@@ -41,11 +58,6 @@ import UniformTypeIdentifiers
     var length: Double { max(32, song.loopEnd, (song.chords.map { $0.start + $0.duration }.max() ?? 0) + 4, (song.tracks.flatMap(\.notes).map { $0.start + $0.duration }.max() ?? 0) + 4) }
     init() {
         savedSong = song
-        audio.onBeat = { [weak self] beat in self?.playhead = beat }
-        audio.onError = { [weak self] message in self?.error = message; self?.playing = false }
-        audio.onStopped = { [weak self] in self?.playing = false }
-        audio.midi.onError = { [weak self] message in self?.error = message }
-        if let midiError = audio.midi.lastError { error = midiError }
     }
     var dirty: Bool { song != savedSong }
     func confirmDiscard() -> Bool {
@@ -57,8 +69,11 @@ import UniformTypeIdentifiers
         return result == .alertThirdButtonReturn
     }
     func confirmClose() -> Bool { guard confirmDiscard() else { return false }; audio.stop(); savedSong = song; return true }
-    func mutate(_ change: (inout Song) -> Void) {
-        undoStack.append(song); redoStack.removeAll(); change(&song); revision += 1
+    func mutate(synchronizesNativeSections: Bool = false, _ change: (inout Song) -> Void) {
+        let previous = song
+        undoStack.append(song); redoStack.removeAll(); change(&song)
+        song.recordSectionProjectionEdit(comparedTo: previous, nativeFieldsSynchronized: synchronizesNativeSections)
+        revision += 1
     }
     func quantize(_ beat: Double) -> Double { guard beat.isFinite else { return 0 }; return min(16380, max(0, snap == 0 ? beat : (beat / snap).rounded() * snap)) }
     func undo() { guard let old = undoStack.popLast() else { return }; redoStack.append(song); song = old; revision += 1 }
@@ -69,12 +84,15 @@ import UniformTypeIdentifiers
         mutate { song in song.chords.append(clip); song.sections.append(SongSection(name: "Section \(song.sections.count + 1)", start: clip.start, duration: clip.duration)) }; selectedChord = clip.id; selectedChords = [clip.id]; preview(clip)
     }
     func preview(_ clip: ChordClip) {
-        do { try audio.prepare(song); audio.preview(clip.pitches.map { min(127, max(0, $0 + previewOctave * 12)) }, velocity: previewVelocity, strum: strum) }
+        do { try audio.prepare(song); audio.preview(clip.pitches.map { min(127, max(0, $0 + previewOctave * 12)) }, velocity: previewVelocity, strum: strum, tempo: song.tempo) }
         catch { self.error = error.localizedDescription }
     }
     func togglePlay() {
         if playing { audio.stop(); playing = false; return }
-        do { try audio.play(songProvider: { [weak self] in self?.song ?? Song() }, from: playhead >= song.loopEnd && looping ? song.loopStart : playhead, looping: { [weak self] in self?.looping ?? false }); playing = true }
+        do {
+            try audio.play(songProvider: { [weak self] in self?.song ?? Song() }, from: playhead >= song.loopEnd && looping ? song.loopStart : playhead, looping: { [weak self] in self?.looping ?? false })
+            playing = true
+        }
         catch { self.error = error.localizedDescription }
     }
     func stop() { audio.stop(); playing = false; playhead = song.loopStart }
@@ -161,6 +179,38 @@ import UniformTypeIdentifiers
             else if let index = song.sections.firstIndex(where: { $0.id == section.id }) { song.sections[index] = result }
         }
     }
+    func renameSection(_ section: SongSection, name: String) {
+        guard let index = song.sections.firstIndex(where: { $0.id == section.id }) else { return }
+        if let path = section.nativePath {
+            renameNativeSection(at: path, name: name)
+        } else {
+            mutate { $0.sections[index].name = name }
+        }
+    }
+    func renameNativeSection(at path: KlimperSectionPath, name: String) {
+        guard let nativeSections = song.nativeSections,
+              (try? path.resolve(in: nativeSections)) != nil else { return }
+        let canSynchronize = song.nativeSectionFidelity == .preserved
+        mutate(synchronizesNativeSections: canSynchronize) { song in
+            guard var sections = song.nativeSections, path.setName(name, in: &sections) else { return }
+            song.nativeSections = sections
+            if let index = song.sections.firstIndex(where: { $0.nativePath == path }) {
+                song.sections[index].name = name
+            }
+        }
+    }
+    func selectNativeSection(at path: KlimperSectionPath) {
+        selectedNativeSectionPath = path
+        selectedChords = []
+        selectedChord = nil
+        selectedNotes = []
+        guard let projection = song.sections.first(where: { $0.nativePath == path }) else {
+            selectedSections = []
+            return
+        }
+        selectedSections = [projection.id]
+        cursorBeat = projection.start
+    }
     func moveChords(_ chord: ChordClip, delta: Double, duplicate: Bool) {
         let ids = selectedChords.contains(chord.id) ? selectedChords : [chord.id]
         let chosen = song.chords.filter { ids.contains($0.id) }
@@ -174,12 +224,12 @@ import UniformTypeIdentifiers
             }
         }
     }
-    func newProject() { guard confirmDiscard() else { return }; stop(); mutate { $0 = Song() }; savedSong = song; documentURL = nil; selectedTrack = 0; selectedNotes = []; selectedChord = nil }
+    func newProject() { guard confirmDiscard() else { return }; stop(); mutate { $0 = Song() }; savedSong = song; documentURL = nil; selectedTrack = 0; selectedNotes = []; selectedChord = nil; selectedChords = []; selectedSections = []; selectedNativeSectionPath = nil }
     func open() {
         guard confirmDiscard() else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "hsketch") ?? .json, .json]
         if panel.runModal() == .OK, let url = panel.url {
-            do { let loaded = try ProjectPersistence.load(from: url); stop(); mutate { $0 = loaded }; savedSong = song; documentURL = url; selectedTrack = 0; selectedNotes = []; selectedChord = nil }
+            do { let loaded = try ProjectPersistence.load(from: url); stop(); mutate { $0 = loaded }; savedSong = song; documentURL = url; selectedTrack = 0; selectedNotes = []; selectedChord = nil; selectedChords = []; selectedSections = []; selectedNativeSectionPath = nil }
             catch { self.error = error.localizedDescription }
         }
     }
@@ -189,9 +239,10 @@ import UniformTypeIdentifiers
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 let imported = try KlimperImporter.loadWithWarnings(from: url)
-                stop(); mutate { $0 = imported.song }
-                if song.tracks.isEmpty { song.tracks = [Track(name: "Melody")] }
-                documentURL = nil; selectedTrack = 0; selectedNotes = []; selectedChords = []; selectedSections = []; selectedChord = nil
+                var importedSong = imported.song
+                if importedSong.tracks.isEmpty { importedSong.tracks = [Track(name: "Melody")] }
+                stop(); mutate { $0 = importedSong }
+                documentURL = nil; selectedTrack = 0; selectedNotes = []; selectedChords = []; selectedSections = []; selectedChord = nil; selectedNativeSectionPath = nil
                 if !imported.warnings.isEmpty { let alert = NSAlert(); alert.messageText = "Project imported with differences"; alert.informativeText = imported.warnings.joined(separator: "\n"); alert.runModal() }
             } catch { self.error = error.localizedDescription }
         }

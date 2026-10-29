@@ -53,10 +53,12 @@ struct PaletteView: View {
         let majorFamily: Set<ChordQuality> = [.major, .sixth, .seventh, .majorSeventh, .ninth, .majorNinth, .eleventh]
         let minorFamily: Set<ChordQuality> = [.minor, .minorSixth, .minorSeventh, .minorNinth]
         let color: Color = majorFamily.contains(quality) ? .mint : minorFamily.contains(quality) ? .purple : .gray
-        let relation = MusicTheory.relation(from: store.chord, root: root, quality: quality, mode: store.relation)
         let chosen = store.track.notes.filter { store.selectedNotes.contains($0.id) }
-        let pitches = Set(quality.intervals.map { MusicTheory.pc(root + $0) })
-        let matches = !matchNotes || chosen.allSatisfy { pitches.contains(MusicTheory.pc($0.pitch)) }
+        let selectedPitches = chosen.map(\.pitch)
+        let candidate = HarmonyChord.from(root: root, quality: quality)
+        let matchScore = MusicTheory.matchNotesScore(selection: selectedPitches.isEmpty ? nil : selectedPitches, second: candidate)
+        let relation = matchNotes ? Double(matchScore) : MusicTheory.relation(from: store.chord, root: root, quality: quality, mode: store.relation, key: key)
+        let matches = !matchNotes || selectedPitches.isEmpty || matchScore == 1
         return Text(MusicTheory.label(root: root, quality: quality, key: store.song.key, mode: store.song.mode, roman: store.roman))
             .font(.system(size: 10, weight: .semibold)).minimumScaleFactor(0.6).frame(width: 42, height: 42)
             .background(Circle().fill(inKey ? color.opacity(0.30) : Color.clear))

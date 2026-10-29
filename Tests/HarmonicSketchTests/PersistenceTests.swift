@@ -8,12 +8,15 @@ final class PersistenceTests: XCTestCase {
                         tracks: [Track(name: "Lead", notes: [Note(pitch: 67, start: 1.25, duration: 0.75, velocity: 103)], volume: 0.62, mute: false, solo: true, instrument: 81)],
                         chords: [ChordClip(root: 9, quality: .minorSeventh, start: 4, duration: 2, inversion: 1)],
                         sections: [SongSection(name: "Verse", start: 0, duration: 8)],
+                        chordSettings: ChannelSettings(volume: 0.55, solo: true, instrument: 6, pan: -0.25),
                         loopStart: 2, loopEnd: 10)
+        var songWithPan = song
+        songWithPan.tracks[0].pan = 0.4
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(ProjectPersistence.fileExtension)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        try ProjectPersistence.save(song, to: url)
-        XCTAssertEqual(try ProjectPersistence.load(from: url), song)
+        try ProjectPersistence.save(songWithPan, to: url)
+        XCTAssertEqual(try ProjectPersistence.load(from: url), songWithPan)
     }
 
     func testLoadRejectsInvalidMusicalRanges() throws {
@@ -53,6 +56,44 @@ final class PersistenceTests: XCTestCase {
         XCTAssertThrowsError(try ProjectPersistence.validate(song))
 
         song.tracks = [Track(name: "Lead", notes: [Note(pitch: 60, start: ProjectPersistence.maximumBeat, duration: 1)])]
+        XCTAssertThrowsError(try ProjectPersistence.validate(song))
+    }
+
+    func testVersionOneProjectsWithoutNewMixFieldsStillLoad() throws {
+        var song = Song()
+        song.tracks[0].pan = -0.6
+        song.chordSettings = ChannelSettings(volume: 0.4, mute: true, solo: true, instrument: 11, pan: 0.7)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try ProjectPersistence.save(song, to: url)
+
+        var project = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var storedSong = try XCTUnwrap(project["song"] as? [String: Any])
+        storedSong.removeValue(forKey: "chordSettings")
+        storedSong.removeValue(forKey: "nativeSections")
+        let storedTracks = try XCTUnwrap(storedSong["tracks"] as? [[String: Any]])
+        storedSong["tracks"] = storedTracks.map { track -> [String: Any] in
+            var oldTrack = track
+            oldTrack.removeValue(forKey: "pan")
+            return oldTrack
+        }
+        project["song"] = storedSong
+        try JSONSerialization.data(withJSONObject: project).write(to: url)
+
+        let loaded = try ProjectPersistence.load(from: url)
+        XCTAssertNil(loaded.chordSettings)
+        XCTAssertNil(loaded.nativeSections)
+        XCTAssertEqual(loaded.chordChannel, ChannelSettings())
+        XCTAssertNil(loaded.tracks[0].pan)
+    }
+
+    func testValidationRejectsOutOfRangeMixControls() {
+        var song = Song()
+        song.tracks[0].pan = 1.1
+        XCTAssertThrowsError(try ProjectPersistence.validate(song))
+
+        song.tracks[0].pan = 0
+        song.chordSettings = ChannelSettings(volume: .infinity)
         XCTAssertThrowsError(try ProjectPersistence.validate(song))
     }
 

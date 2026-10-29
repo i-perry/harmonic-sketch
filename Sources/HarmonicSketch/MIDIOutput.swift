@@ -44,6 +44,7 @@ import Foundation
     func noteOff(pitch: Int, channel: Int) { send([0x80 | UInt8(clamping: channel & 15), UInt8(clamping: pitch), 0]) }
     func programChange(program: Int, channel: Int) { send([0xC0 | UInt8(clamping: channel & 15), UInt8(clamping: program)]) }
     func setVolume(_ volume: Double, channel: Int) { send([0xB0 | UInt8(clamping: channel & 15), 7, UInt8(clamping: Int(min(1, max(0, volume)) * 127))]) }
+    func setPan(_ pan: Double, channel: Int) { send([0xB0 | UInt8(clamping: channel & 15), 10, UInt8(clamping: Int(((min(1, max(-1, pan)) + 1) * 63.5).rounded()))]) }
     func silence() { for channel in 0..<16 { send([0xB0 | UInt8(channel), 123, 0]) } }
     private func send(_ bytes: [UInt8]) {
         guard let destinationIndex, endpoints.indices.contains(destinationIndex), port != 0 else { return }

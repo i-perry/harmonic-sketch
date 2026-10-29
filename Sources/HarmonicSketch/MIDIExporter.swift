@@ -18,10 +18,8 @@ enum MIDIExporter {
 
     static func data(for song: Song) throws -> Data {
         try ProjectPersistence.validate(song)
-        let activeTracks = song.tracks.filter { !$0.mute }
-        let soloed = activeTracks.contains(where: \.solo)
-        let audibleTracks = activeTracks.filter { !soloed || $0.solo }
-        let hasChordTrack = !song.chords.isEmpty
+        let audibleTracks = MixingPolicy.audibleTracks(in: song)
+        let hasChordTrack = MixingPolicy.includesChordTrack(in: song)
         let availableChannels = (0...15).filter { $0 != 9 && !(hasChordTrack && $0 == 0) }
         guard audibleTracks.count <= availableChannels.count else { throw ExportError.tooManyAudibleTracks }
         var chunks = [trackChunk(events: metadataEvents(for: song))]
@@ -29,7 +27,7 @@ enum MIDIExporter {
             chunks.append(trackChunk(events: try musicEvents(for: track, channel: channel)))
         }
         if hasChordTrack {
-            chunks.append(trackChunk(events: try chordEvents(for: song.chords, channel: 0)))
+            chunks.append(trackChunk(events: try chordEvents(for: song.chords, settings: song.chordChannel, channel: 0)))
         }
         var result = Data("MThd".utf8)
         appendUInt32(6, to: &result)
@@ -60,9 +58,10 @@ enum MIDIExporter {
         var events = [
             Event(tick: 0, priority: 0, bytes: metaText(type: 0x03, text: track.name), sequence: 0),
             Event(tick: 0, priority: 1, bytes: [UInt8(0xC0 | channel), UInt8(track.instrument)], sequence: 1),
-            Event(tick: 0, priority: 2, bytes: [UInt8(0xB0 | channel), 7, UInt8((track.volume * 127).rounded())], sequence: 2)
+            Event(tick: 0, priority: 2, bytes: [UInt8(0xB0 | channel), 7, UInt8((track.volume * 127).rounded())], sequence: 2),
+            Event(tick: 0, priority: 3, bytes: [UInt8(0xB0 | channel), 10, midiPan(track.pan ?? 0)], sequence: 3)
         ]
-        var sequence = 3
+        var sequence = 4
         for note in track.notes {
             let (start, end) = try tickRange(start: note.start, duration: note.duration)
             guard end > start else { throw ExportError.invalidTiming }
@@ -74,13 +73,14 @@ enum MIDIExporter {
         return events
     }
 
-    private static func chordEvents(for chords: [ChordClip], channel: Int) throws -> [Event] {
+    private static func chordEvents(for chords: [ChordClip], settings: ChannelSettings, channel: Int) throws -> [Event] {
         var events = [
             Event(tick: 0, priority: 0, bytes: metaText(type: 0x03, text: "Chords"), sequence: 0),
-            Event(tick: 0, priority: 1, bytes: [UInt8(0xC0 | channel), 0], sequence: 1),
-            Event(tick: 0, priority: 2, bytes: [UInt8(0xB0 | channel), 7, 102], sequence: 2)
+            Event(tick: 0, priority: 1, bytes: [UInt8(0xC0 | channel), UInt8(settings.instrument)], sequence: 1),
+            Event(tick: 0, priority: 2, bytes: [UInt8(0xB0 | channel), 7, UInt8((settings.volume * 127).rounded())], sequence: 2),
+            Event(tick: 0, priority: 3, bytes: [UInt8(0xB0 | channel), 10, midiPan(settings.pan)], sequence: 3)
         ]
-        var sequence = 3
+        var sequence = 4
         for chord in chords {
             let (start, end) = try tickRange(start: chord.start, duration: chord.duration)
             guard end > start else { throw ExportError.invalidTiming }
@@ -92,6 +92,10 @@ enum MIDIExporter {
             }
         }
         return events
+    }
+
+    private static func midiPan(_ pan: Double) -> UInt8 {
+        UInt8(((min(1, max(-1, pan)) + 1) * 63.5).rounded())
     }
 
     private static func tick(for beat: Double) throws -> Int {
