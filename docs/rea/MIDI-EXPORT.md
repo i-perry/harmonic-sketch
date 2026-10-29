@@ -1,6 +1,6 @@
 # MidiClipComponent clip-drag MIDI writer
 
-Status: one static clip-drag writer is recovered far enough to specify its note-event and SMF serialization path. This is not a specification of every MIDI export feature, MIDI input, or project-wide export. No original-app activation or execution was performed.
+Status: one static clip-drag writer is recovered far enough to specify its note-event and SMF serialization path. A separate File-menu/project-export boundary audit found an “Export Klimper Project” artifact string but did not join it to a UI action or MIDI writer. This is not a specification of every MIDI export feature, MIDI input, or project-wide export. No original-app activation or execution was performed.
 
 ## Target and evidence
 
@@ -43,6 +43,56 @@ The velocity conversion uses the same bias constant after multiplying the float 
 The emitted header is `MThd`, length 6, format 1, one track, and division `0x03C0` (960 ticks per quarter note). The track is emitted as `MTrk` with a computed payload length. The method creates a path ending in the fixed basename `clip.mid`, opens/truncates its stream, serializes the file, then passes the resulting file/string context to `FUN_10033a0cc` as drag data. The exact temporary-directory/path construction and external drop-target behavior are not established.
 
 No tempo meta-event is inserted by the recovered method. The time conversion is therefore tempo-independent and the file contains no observed tempo value; how a consuming DAW chooses playback tempo is outside this evidence. In particular, the UI's tempo or a project's BPM must not be added to an implementation of this path without separate evidence. The quarter-note interpretation of 2592 native units follows the playback conversion `10368 / 4` documented in [`PLAYBACK.md`](PLAYBACK.md); 960 PPQ is directly observed in this writer.
+
+## File-menu and full-project export boundary (2026-10-29)
+
+The Ghidra-defined string inventory contains “Export Klimper Project” at
+`0x100392130`, alongside “Open Klimper Project”, “Save Klimper Project”, and
+“Save Klimper Project as...”. This is artifact-string evidence only: a direct
+Ghidra xref query for the export string returned no references, and no menu
+construction/action edge is established. The query scope covers Ghidra-defined
+references and strings; packed or otherwise undefined data and indirect UI
+dispatch may be absent. Do not infer either an active File-menu action or the
+absence of one from these strings/xrefs alone. Evidence: string inventory
+`ev_0f9ad71db5c20919beecea5ece83334dd413c751c1b3bdb85d706493674f8ed6`, export
+search `ev_4e0401d6740ba51225a8fe617d430d9cc85900be6c59f56e1dcc1e61d906385f`,
+and xrefs `ev_42657c48ab9e830de26d7efd0adc2442adafd89be6af3ccd34fc93d03a004b65`.
+
+The separately recovered `.klp` save adapter `FUN_10000b21c` calls
+`FUN_10000b590` to build the project JSON object and hands the result to its
+save callback; it is a project-document writer, not an SMF writer. The
+recognized JSON writer shape and its limits are specified in
+[`DOCUMENT-SPEC.md`](DOCUMENT-SPEC.md). This does not establish that the
+“Export Klimper Project” string selects that adapter; the menu string-to-action
+join remains unknown. Evidence: save adapter
+`ev_c452220fbfa7e3a305da8f6a61a6682f5d71fbba7bd94a30dccc4d3c715ab59f` and
+JSON writer `ev_7607806451f319706b04142bcb3dabf7bcb5110d567833674b0997579d97184`.
+
+The only fully traced MIDI file writer in this audit is the `MidiClipComponent`
+drag path described above. Its emitted events use channel 0 (`0x90` note-on
+and `0x80` note-off), one SMF track, 960 PPQ, and no tempo event. Its records
+come from the component's selected-note/range extraction, not a recovered
+all-track project traversal. The direct multi-note selection branch is
+earliest-onset-relative; the other selection branches do not yet have a
+reconciled origin/filtering contract. The basename `clip.mid` and drag-data
+handoff are observed, but the external consumer's behavior is not.
+
+The defined-string search for “midi” returns the clip affordance and `clip.mid`
+path, plus MIDI device/engine strings; it does not return a separate
+“Export MIDI” label. This is a bounded string-inventory observation, not proof
+that the artifact has no additional MIDI exporter or a menu item whose label
+does not mention MIDI. No full-song/project MIDI writer, channel allocation
+policy across tracks, tempo policy, or File-menu export handler has been
+established in the examined evidence. A complete initialized-memory byte scan
+also found no literal `MThd` or `MTrk` byte sequences; this cannot exclude a
+writer that constructs the chunk identifiers from smaller values. The scan
+skipped uninitialized regions, so it is only negative evidence for the searched
+initialized image. Evidence: `ev_08155416098d2877fc738e81a9000971279e3e6fbfa7e32ee90af91ec3050750`
+and `ev_f86daf14d5b6dd74ec3d51496259200bf5ca8aab882ef477ecaf169da4ef918e`.
+Retained audit bundle:
+[`rea-midi-full-export-boundary-2026-10-29-v2.json`](../../research/rea-midi-full-export-boundary-2026-10-29-v2.json)
+(16 records; 0 REA unknowns). The clip-writer details remain in
+[`rea-midi-clip-writer-2026-10-28.json`](../../research/rea-midi-clip-writer-2026-10-28.json).
 
 ## Derived test vectors (not runtime observations)
 
