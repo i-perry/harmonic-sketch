@@ -137,9 +137,22 @@ The parallel `music::instrument_of(Song const&, std::string&)` and
 `music::instruments_in_use(Song const&, std::set<std::string>&)` closure type
 strings (`ev_ce43d4f4b52c49a260fac1707f23a5832f82cb213ba735f78326e59f60e6c231`,
 `ev_441a6bbfb1352c10acb241abbc24d24cc77d7c455f3bf066cc3679d3ccca0503`)
-identify plausible song-wide lookup/collection operations. The
-`instrument_of` RTTI identity alone does not establish its implementation,
-caller, or role in the scheduled note path.
+identify a song-wide lookup and collection operation. The actual
+`instrument_of` invoker is `FUN_1000dbe90`, identified through its callable
+table entry at `0x1009c16b8`; `FUN_1000dbecc` is only the RTTI manager/type
+check, not the invoker (`ev_86f973677099eefb775be9bb8ad84d9753042aa95ee515ff57bba96168bac918`,
+`ev_1150c820a4ca9743a601645c04720ba26641b153f059849b2aaba15de474877f`).
+When the closure's captured flag at `+0x10` is nonzero, the invoker reads its
+captured identifier at `+0x8`, scans the Song Track array at `Song+0x28..
+Song+0x30` in `0x48`-byte records, compares each record's `+0x40` identifier,
+and assigns the selected record's string at `+0x10` to the output. The helper
+`FUN_100033174` throws `track not found` when the identifier is absent
+(`ev_815924b92ce053f6096f9f38314977fffa110ad0c3b292433c9d31521eac338a`).
+When the flag is zero, it copies the string from the Song argument at `+0x10`
+directly. This establishes the lookup operation's Track-string
+behavior, but not yet where the closure is created or which scheduler event
+uses it. The unique 40-record REA export is
+[`rea-instrument-track-lookup-luna-2026-10-28.json`](../../research/rea-instrument-track-lookup-luna-2026-10-28.json).
 
 ### Soundfonts note-on dispatch
 
@@ -188,27 +201,38 @@ ProjectPlayer note-on callback slot
   -> loaded SoundFont preset/source lookup and channel/bank/program fallback
 ```
 
-They do **not** prove the remaining arrows from a Track to a scheduled note:
-which exact string the selector returns, whether it identifies a soundfont
-file, a named preset, or a combined catalog item; whether Track and ChordTrack
-resolve identically; how a scheduled event looks up its captured Track; or
-whether the persisted project string reaches `Soundfonts::noteOn` unchanged.
-The Soundfonts callback uses status `0x90` (channel 0), but that packet does
-not establish any per-Track channel assignment. The app-side configured
-`.sf2` loader path is proven, while its key/path grammar and relation to the
-Track descriptor remain unknown. The engine's candidate sequence is
-specified above, but there is no validated end-to-end vector from a project
-descriptor to a selected preset.
+The scheduler consumer `FUN_10002a158` reads a by-value string from offset
+`+0x20` of each `0x40`-byte event record and passes it with pitch, velocity,
+and scheduled time to the active callback at the ProjectPlayer subobject's
+`+0x20` field (`ev_228c2e14fb3d1d864574bcca34bf4c86ac204af8760d44f5a756b7074134d046`).
+The constructor evidence above identifies that active field as ProjectPlayer's
+replaceable note-on callback. This closes the consumer-side event-string to
+callback edge. The producer of the scheduler's `0x40`-byte event vector has
+not been recovered, so there is no proof yet that it invokes `instrument_of`
+to populate event string `+0x20`.
+
+The remaining gaps are: which exact string the selector returns; whether it
+identifies a SoundFont file, a named preset, or a combined catalog item;
+whether Track and ChordTrack resolve identically; and whether the event
+producer forwards the persisted Track string unchanged. The callback still
+uses an exact source-map key, but the instrument lookup and callback consumer
+are not joined through the scheduler event producer. The Soundfonts callback
+uses status `0x90` (channel 0), but that packet does not establish any
+per-Track channel assignment. The app-side configured `.sf2` loader path is
+proven, while its key/path grammar and relation to the Track descriptor remain
+unknown. The engine's candidate sequence is specified above, but there is no
+validated end-to-end vector from a project descriptor to a selected preset.
 
 ## Evidence needed to close the trace
 
 1. Recover the selector callback's chosen value and its exact command creation
    call into `set_instrument_suggesting_trackname`, separately for Track and
    ChordTrack targets.
-2. Follow the scheduler's event-vector producer to its captured Track lookup.
-   Retain the string value at that lookup and trace it into the supplied
-   ProjectPlayer callback key. This is the remaining static join between
-   persisted `Track.instrument` and `Soundfonts::noteOn`.
+2. Recover the writer of the scheduler's `0x40`-byte event vector and prove
+   whether it invokes `instrument_of` for each Track. Retain the lookup result
+   at event field `+0x20` and join it to the already recovered consumer call
+   into ProjectPlayer. This is the remaining static join between persisted
+   `Track.instrument` and the key supplied to `Soundfonts::noteOn`.
 3. Recover the app-side configured source collection's key/path grammar and
    connect it to the loaded `.sf2` source and enumerated preset records. The
    embedded resolver's fallback sequence and Soundfonts-side channel-0 packet
