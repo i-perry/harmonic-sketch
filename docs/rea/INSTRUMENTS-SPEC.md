@@ -1,10 +1,10 @@
 # Instrument persistence and sound-source findings
 
 This note traces what the shipped Klimper 2.4 ARM64 binary establishes about
-instrument selection and audio routing. It separates the app's string-valued
-project descriptor from the embedded SoundFont engine's bank/program lookup.
-The static evidence does **not** yet join those two paths end to end, so this
-is a bounded partial specification rather than a recovered mapping contract.
+instrument selection and audio routing. Static evidence now joins each parsed
+Track or ChordTrack `instrument` string through the scheduler event queue to
+the exact Soundfonts source-map key. The selector's command choice, key/path
+grammar, and runtime behavior remain outside that closed static data path.
 
 ## Target and evidence
 
@@ -149,11 +149,68 @@ and assigns the selected record's string at `+0x10` to the output. The helper
 `FUN_100033174` throws `track not found` when the identifier is absent
 (`ev_815924b92ce053f6096f9f38314977fffa110ad0c3b292433c9d31521eac338a`).
 When the flag is zero, it copies the string from the Song argument at `+0x10`
-directly. This establishes the lookup operation's Track-string
-behavior, but not yet where the closure is created or which scheduler event
-uses it. The unique 40-record REA export is
-[`rea-instrument-track-lookup-luna-2026-10-28.json`](../../research/rea-instrument-track-lookup-luna-2026-10-28.json). The current 80-record follow-up is
-[`rea-instrument-producer-join-luna-2026-10-29.json`](../../research/rea-instrument-producer-join-luna-2026-10-29.json); it includes closure-copy and ChordPreview constructor traces, but does not identify the scheduler event producer.
+directly. The parser and aggregate constructor establish that this Song
+prefix is the `chord_track` value: the parser reads its nested
+`chord_track.instrument` property, and `FUN_1000160d0` copies the 0x28-byte
+prefix unchanged before placing the 0x48-byte Track array at `Song+0x28`.
+Thus the closure's nonzero branch is Track lookup by captured ID, and its
+zero branch is ChordTrack instrument fallback. Its capture creation site
+remains unknown. The scheduler writer does not invoke this closure; it copies
+the stored fields directly. The unique 40-record REA export is
+[`rea-instrument-track-lookup-luna-2026-10-28.json`](../../research/rea-instrument-track-lookup-luna-2026-10-28.json). The 80-record closure follow-up is
+[`rea-instrument-producer-join-luna-2026-10-29.json`](../../research/rea-instrument-producer-join-luna-2026-10-29.json). A further 107-record queue-frontier export is
+[`rea-instrument-queue-frontier-luna-2026-10-29b.json`](../../research/rea-instrument-queue-frontier-luna-2026-10-29b.json).
+
+The fresh parser, layout, and writer evidence is preserved in
+[`rea-instrument-song-track-layout-luna-2026-10-29e.json`](../../research/rea-instrument-song-track-layout-luna-2026-10-29e.json)
+and the focused writer export
+[`rea-instrument-queue-writer-luna-2026-10-29c.json`](../../research/rea-instrument-queue-writer-luna-2026-10-29c.json).
+Reader Evidence is `ev_504dabced6cd1265ee1c0bd3f89546320c336cda6bc363f11af316e55b8144d0`;
+the aggregate layout constructor is
+`ev_a945429b891a7895511890ca5caa777e395338124c315c9715d1ccbefe4d5346`;
+the nested queue writer is
+`ev_b06e3257d6ce2b529a7d4b0ba76a9e3fcb2a60611dd85d81ec4c31fe7075988d`.
+
+### Parsed project fields through the scheduler
+
+`FUN_1000135c8` parses the `chord_track` object and its `volume`, `pan`,
+`mute`, `solo`, and `instrument` properties. It separately parses `tracks`
+as 0x48-byte rows containing `id`, `name`, `volume`, `pan`, `mute`, `solo`,
+and `instrument`. `FUN_1000160d0` copies the 0x28-byte chord-track prefix
+unchanged into the aggregate, then copies the Track-row vector beginning at
+`Song+0x28`. The resulting Track layout is volume at `+0`, mute/solo bytes
+at `+8/+9`, instrument string at `+0x10`, name at `+0x28`, and identifier at
+`+0x40`.
+
+The scheduler's outer invoker `FUN_10002c73c` calls nested writer
+`FUN_10002c810` with the captured event-vector destination. The writer
+receives the Song-shaped value at provider `P+0x108`; it first builds a record
+from the Song prefix, then one record per 0x48-byte Track row. It copies the
+instrument string at source `+0x10` to event-record `+0x20` in both cases.
+The first record therefore carries ChordTrack's stored instrument string;
+the later records carry each Track's stored string. This scheduler path does
+not call `FUN_1000dbe90` or use an `instrument_of` return value.
+
+The writer ORs the solo byte across the Song/ChordTrack prefix and all Track
+rows. For each record it writes that row's volume to event `+0x38` only when
+the row is not muted and either no solo is selected or the row itself is
+solo; otherwise it writes zero. The event consumer reads `+0x38` and skips
+note dispatch below `0.0001`. Thus mute and solo selection gate note dispatch
+through volume, while the writer still constructs the records.
+
+`FUN_10002a158` copies event `+0x20` and passes it with pitch, velocity, and
+scheduled time to ProjectPlayer's active callback field at subobject `+0x20`.
+The constructor-installed callback is the Soundfonts callable described in
+[instrument callback join validation](INSTRUMENT-JOIN-VALIDATION.md). It
+passes the string to `Soundfonts::noteOn`, whose source map performs an exact
+key lookup. This closes the static model-to-map-key path for Track and
+ChordTrack instruments. Evidence for the dispatcher/consumer is
+`ev_228c2e14fb3d1d864574bcca34bf4c86ac204af8760d44f5a756b7074134d046`;
+the writer dossier is
+`ev_b06e3257d6ce2b529a7d4b0ba76a9e3fcb2a60611dd85d81ec4c31fe7075988d`.
+Raw records are in
+[`rea-instrument-song-track-layout-luna-2026-10-29e.json`](../../research/rea-instrument-song-track-layout-luna-2026-10-29e.json)
+and [`rea-instrument-queue-writer-luna-2026-10-29c.json`](../../research/rea-instrument-queue-writer-luna-2026-10-29c.json).
 
 ### Soundfonts note-on dispatch
 
@@ -177,10 +234,9 @@ callback body above and `FUN_1000f677c`
 
 This closes the key-to-loaded-source lookup inside `Soundfonts::noteOn` and
 shows channel 0 in that event construction. The constructor installs the
-Soundfonts callable into ProjectPlayer's note-on callback slot, so the
-callback-to-Soundfonts join is established. It still does not establish that
-a Track's persisted `instrument` field is the key supplied here, or how
-scheduled notes select that key.
+Soundfonts callable into ProjectPlayer's note-on callback slot. The scheduler
+trace above establishes that parsed Track and ChordTrack instrument strings
+reach this callback and are used as the exact map key.
 
 ## Current evidence boundary
 
@@ -200,17 +256,28 @@ ProjectPlayer note-on callback slot
   -> app-configured `.sf2` path -> SoundFont loader
   -> exact source-key lookup -> MIDI note packet (channel 0)
   -> loaded SoundFont preset/source lookup and channel/bank/program fallback
+
+Track `instrument`
+  -> parsed Track row +0x10
+  -> scheduler event +0x20
+  -> ProjectPlayer callback -> Soundfonts exact source-key lookup
+
+ChordTrack `instrument`
+  -> parsed Song prefix +0x10
+  -> scheduler's initial event +0x20
+  -> ProjectPlayer callback -> Soundfonts exact source-key lookup
 ```
 
-The scheduler consumer `FUN_10002a158` reads a by-value string from offset
-`+0x20` of each `0x40`-byte event record and passes it with pitch, velocity,
-and scheduled time to the active callback at the ProjectPlayer subobject's
-`+0x20` field (`ev_228c2e14fb3d1d864574bcca34bf4c86ac204af8760d44f5a756b7074134d046`).
-The constructor evidence above identifies that active field as ProjectPlayer's
-replaceable note-on callback. This closes the consumer-side event-string to
-callback edge. The producer of the scheduler's `0x40`-byte event vector has
-not been recovered, so there is no proof yet that it invokes `instrument_of`
-to populate event string `+0x20`. The `instrument_of` closure is 0x18 bytes: its
+`FUN_10002a158` first clears the scheduler's `0x40`-byte event vector, then
+dispatches an indirect provider callback with the vector destination, and only
+after that call reads event records. It copies each record's string at `+0x20`
+and passes it with pitch, velocity, and scheduled time to the active callback at
+the ProjectPlayer subobject's `+0x20` field
+(`ev_228c2e14fb3d1d864574bcca34bf4c86ac204af8760d44f5a756b7074134d046`).
+The constructor evidence identifies that active field as ProjectPlayer's
+replaceable note-on callback. The provider invokers and direct Track/ChordTrack
+field copies are now resolved in [QUEUE-PRODUCER-VALIDATION.md](QUEUE-PRODUCER-VALIDATION.md).
+The `instrument_of` closure is 0x18 bytes: its
 callable table is followed by an identifier qword at `+0x8` and a flag at
 `+0x10`; its clone and inline-copy helpers preserve both captured words
 (`ev_afdac7cc58745e0abbc1b4f5795967761a31035d2f9dd8a4580344bceac12f6e`,
@@ -220,37 +287,33 @@ callable table is followed by an identifier qword at `+0x8` and a flag at
 The ChordPreview constructor `FUN_1000da3dc` copies/queries this callable during
 its setup (`ev_14785251120af5e72ad6de1eb13d1785e9e15aa0705568405089801569066b80`);
 that is evidence of one consumer, not evidence that it creates scheduler
-events. The capture flag creator and its meaning for Track versus ChordTrack
-remain unresolved.
+events. The capture flag's creator remains unresolved; its nonzero Track and
+zero ChordTrack branch meanings follow from the reader layout and lookup body
+above. A separate timer-path trace confirms `FUN_100029860` calls
+`FUN_100029c04` refreshes timing/provider state before the timer calls `FUN_10002a158` (`ev_3b122064a52746ac6829090709626e2a74f65cc2c9e55d7f211346eeb7ffee4`, `ev_0a792faf5f8b6200ace93d40f28cd8bccbcbb40b516bfb653882c7d5cb135de2`). Within `FUN_10002a158`, the outer provider callback captures the event-vector destination and receives provider object `+0x108`; its invoker slot `0x1009be9c8` resolves to `FUN_10002c73c`, which dispatches nested invoker `FUN_10002c810` from slot `0x1009bea48`. The nested writer copies the ChordTrack prefix and Track-row instrument strings into event `+0x20`; this completes the static model-to-Soundfonts path described above. The `instrument_of` closure creator remains outside this scheduler flow. Full boundary and validation details: [QUEUE-PRODUCER-VALIDATION.md](QUEUE-PRODUCER-VALIDATION.md).
 
-The remaining gaps are: which exact string the selector returns; whether it
-identifies a SoundFont file, a named preset, or a combined catalog item;
-whether Track and ChordTrack resolve identically; and whether the event
-producer forwards the persisted Track string unchanged. The callback still
-uses an exact source-map key, but the instrument lookup and callback consumer
-are not joined through the scheduler event producer. The Soundfonts callback
-uses status `0x90` (channel 0), but that packet does not establish any
-per-Track channel assignment. The app-side configured `.sf2` loader path is
-proven, while its key/path grammar and relation to the Track descriptor remain
-unknown. The engine's candidate sequence is specified above, but there is no
-validated end-to-end vector from a project descriptor to a selected preset.
+The remaining gaps are which exact string the selector returns and which
+command it creates for Track versus ChordTrack; whether that string identifies
+a SoundFont file, named preset, or combined catalog item; and the configured
+source collection's key/path grammar. The static model-to-map-key flow is
+closed, but the app-side configured `.sf2` path has not been joined to the
+map-key namespace or to a selected preset. The Soundfonts callback emits
+status `0x90` (channel 0); that packet does not establish per-Track channel
+assignment. The engine's bank/program candidate sequence is specified above,
+but no project-level mapping from instrument key to selected bank/program has
+been recovered.
 
 ## Evidence needed to close the trace
 
 1. Recover the selector callback's chosen value and its exact command creation
    call into `set_instrument_suggesting_trackname`, separately for Track and
    ChordTrack targets.
-2. Recover the writer of the scheduler's `0x40`-byte event vector and prove
-   whether it invokes `instrument_of` for each Track. Retain the lookup result
-   at event field `+0x20` and join it to the already recovered consumer call
-   into ProjectPlayer. This is the remaining static join between persisted
-   `Track.instrument` and the key supplied to `Soundfonts::noteOn`.
-3. Recover the app-side configured source collection's key/path grammar and
+2. Recover the app-side configured source collection's key/path grammar and
    connect it to the loaded `.sf2` source and enumerated preset records. The
    embedded resolver's fallback sequence and Soundfonts-side channel-0 packet
    are specified above; project-level routing remains open.
 
-Until those connections are proven, reconstruction should preserve the
-serialized instrument string and model track/output bindings as unresolved.
+Reconstruction should preserve the serialized instrument string. Keep the
+selector-to-command association and key-to-file/preset mapping unresolved.
 Do not substitute a General MIDI program table based only on the embedded
 SoundFont parser or `bank/program` logging strings.
