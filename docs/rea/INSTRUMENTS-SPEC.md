@@ -125,14 +125,21 @@ the signature shape `(std::string, int, float, double)`. The former type
 identity is referenced by the helper at `FUN_1000e649c`
 (`ev_6b4ac5379e3355733dc7416d915cd2dff0e75d5c564f20634d8429a9d72dd99d`);
 the latter is present in the Soundfonts type inventory cited above. Matching
-signatures alone do not establish that the callback forwards to Soundfonts,
-or identify the string and integer arguments as instrument and channel. The
-parallel `music::instrument_of(Song const&, std::string&)` and
+signatures alone did not establish that the callback forwards to Soundfonts.
+The constructor's callable copy and swap prove the join
+(`ev_5431079b618c040a155572d76e0d7ed15fcc3d48a8059d4e84a1add7029818eb`,
+`ev_22ed24e51e31ba065485b4c1326daadc90b0d0bc489a004fab8fb0d035273faf`). Its
+callback vtable identifies the invoked Soundfonts lambda
+(`ev_71d4390f1ad2ab6ab54417f711d3d1ded54a73dfb0fea02f48994ec4b4e826fc`).
+The details are in
+[instrument callback join validation](INSTRUMENT-JOIN-VALIDATION.md).
+The parallel `music::instrument_of(Song const&, std::string&)` and
 `music::instruments_in_use(Song const&, std::set<std::string>&)` closure type
 strings (`ev_ce43d4f4b52c49a260fac1707f23a5832f82cb213ba735f78326e59f60e6c231`,
 `ev_441a6bbfb1352c10acb241abbc24d24cc77d7c455f3bf066cc3679d3ccca0503`)
-identify plausible song-wide lookup/collection operations, but static closure
-type data does not reveal their implementations or callers.
+identify plausible song-wide lookup/collection operations. The
+`instrument_of` RTTI identity alone does not establish its implementation,
+caller, or role in the scheduled note path.
 
 ### Soundfonts note-on dispatch
 
@@ -155,9 +162,11 @@ callback body above and `FUN_1000f677c`
 (`ev_e86d751e33be46344c2ff0ed1eb7c0933af4094e34635d69b18b3a08740f854e`).
 
 This closes the key-to-loaded-source lookup inside `Soundfonts::noteOn` and
-shows channel 0 in that event construction. It does not establish that
-`ProjectPlayer` invokes this method, that a Track's persisted `instrument`
-field is the key supplied here, or how Tracks are assigned channels upstream.
+shows channel 0 in that event construction. The constructor installs the
+Soundfonts callable into ProjectPlayer's note-on callback slot, so the
+callback-to-Soundfonts join is established. It still does not establish that
+a Track's persisted `instrument` field is the key supplied here, or how
+scheduled notes select that key.
 
 ## Current evidence boundary
 
@@ -170,39 +179,40 @@ Track / ChordTrack string field
 InstrumentSelector and set_instrument_suggesting_trackname command
   -> command code copies a string into a model string field
 
-Soundfonts noteOn(string, ...)
+ProjectPlayer note-on callback slot
+  -> constructor-installed Soundfonts callable
+  -> Soundfonts noteOn(string, ...)
   -> map<string, unique_ptr<SoundfontAudioSource>>
   -> app-configured `.sf2` path -> SoundFont loader
   -> exact source-key lookup -> MIDI note packet (channel 0)
   -> loaded SoundFont preset/source lookup and channel/bank/program fallback
 ```
 
-They do **not** prove the arrows between those endpoints: which exact string
-the selector returns, whether it identifies a soundfont file, a named preset,
-or a combined catalog item; whether Track and ChordTrack resolve identically;
-how the project/player binds each Track to a channel; or whether the project
-string is passed directly to `Soundfonts::noteOn`. The app's visible output
-callback and the embedded engine's MIDI channel selection are also not yet
-joined by a complete static call/data-flow trace. The app-side configured
-`.sf2` loader path is proven, but its key/path grammar and relation to the
+They do **not** prove the remaining arrows from a Track to a scheduled note:
+which exact string the selector returns, whether it identifies a soundfont
+file, a named preset, or a combined catalog item; whether Track and ChordTrack
+resolve identically; how a scheduled event looks up its captured Track; or
+whether the persisted project string reaches `Soundfonts::noteOn` unchanged.
+The Soundfonts callback uses status `0x90` (channel 0), but that packet does
+not establish any per-Track channel assignment. The app-side configured
+`.sf2` loader path is proven, while its key/path grammar and relation to the
 Track descriptor remain unknown. The engine's candidate sequence is
 specified above, but there is no validated end-to-end vector from a project
-descriptor to a selected preset or an allocated MIDI channel.
+descriptor to a selected preset.
 
 ## Evidence needed to close the trace
 
 1. Recover the selector callback's chosen value and its exact command creation
    call into `set_instrument_suggesting_trackname`, separately for Track and
    ChordTrack targets.
-2. Trace the runtime `ProjectPlayer`/output callback from a specific Track
-   record to `Soundfonts::noteOn`, retaining the actual string argument and
-   channel argument through the indirect call boundary.
+2. Follow the scheduler's event-vector producer to its captured Track lookup.
+   Retain the string value at that lookup and trace it into the supplied
+   ProjectPlayer callback key. This is the remaining static join between
+   persisted `Track.instrument` and `Soundfonts::noteOn`.
 3. Recover the app-side configured source collection's key/path grammar and
-   connect it to the loaded `.sf2` source and enumerated preset records. Then
-   trace the ProjectPlayer callback into `Soundfonts::noteOn`, and connect the
-   Track's persisted field and any per-track channel assignment to those
-   arguments. The embedded resolver's fallback sequence and Soundfonts-side
-   channel-0 packet are specified above; project-level routing remains open.
+   connect it to the loaded `.sf2` source and enumerated preset records. The
+   embedded resolver's fallback sequence and Soundfonts-side channel-0 packet
+   are specified above; project-level routing remains open.
 
 Until those connections are proven, reconstruction should preserve the
 serialized instrument string and model track/output bindings as unresolved.
